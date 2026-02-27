@@ -1,0 +1,1082 @@
+import json
+from urllib import request, error
+import time
+import os
+import shutil
+import subprocess
+import random
+import requests
+from typing import Optional, List, Dict
+import threading
+
+
+class ComfyUIWorkflow:
+    """ComfyUI工作流处理类"""
+
+    def __init__(self, seed_id=65, input_image_id=41, output_image_id=181, workflow='Qwen_remove.json'):
+        """
+        初始化工作流处理器
+        :param seed_id: 种子节点ID
+        :param input_image_id: 输入图像节点ID
+        :param output_image_id: 输出图像节点ID
+        :param workflow: 工作流JSON文件名
+        """
+        self.seed_id = str(seed_id)
+        self.input_image_id = str(input_image_id)
+        self.output_image_id = str(output_image_id)
+        self.workflow_file = workflow
+        self.original_workflow = None
+
+    def load_workflow(self):
+        """加载工作流JSON文件"""
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        workflow_path = os.path.join(script_dir, self.workflow_file)
+
+        if not os.path.exists(workflow_path):
+            raise FileNotFoundError(f"找不到工作流文件: {workflow_path}")
+
+        with open(workflow_path, 'r', encoding='utf-8') as f:
+            self.original_workflow = json.load(f)
+
+        return True
+
+    def set_seed(self, seed_value):
+        """
+        设置随机种子
+        :param seed_value: 种子值
+        """
+        if not self.original_workflow:
+            raise RuntimeError("工作流未加载，请先调用 load_workflow()")
+
+        self.original_workflow[self.seed_id]["inputs"]["seed"] = int(seed_value)
+
+    def set_input_image(self, image_filename):
+        """
+        设置输入图像
+        :param image_filename: 图像文件名
+        """
+        if not self.original_workflow:
+            raise RuntimeError("工作流未加载，请先调用 load_workflow()")
+
+        self.original_workflow[self.input_image_id]["inputs"]["image"] = image_filename
+
+    def set_output_prefix(self, output_prefix):
+        """
+        设置输出文件前缀
+        :param output_prefix: 输出文件前缀
+        """
+        if not self.original_workflow:
+            raise RuntimeError("工作流未加载，请先调用 load_workflow()")
+
+        self.original_workflow[self.output_image_id]["inputs"]["filename_prefix"] = output_prefix
+
+    def get_workflow(self):
+        """获取当前工作流配置"""
+        if not self.original_workflow:
+            raise RuntimeError("工作流未加载，请先调用 load_workflow()")
+
+        return self.original_workflow
+
+    def create_workflow_copy(self):
+        """
+        创建工作流的深拷贝
+        :return: 工作流的副本
+        """
+        if not self.original_workflow:
+            raise RuntimeError("工作流未加载，请先调用 load_workflow()")
+
+        return json.loads(json.dumps(self.original_workflow))
+
+
+class UserDatabase:
+    """用户数据库管理类"""
+
+    def __init__(self, db_file="user_database.json"):
+        """
+        初始化数据库
+        :param db_file: 数据库文件路径
+        """
+        self.db_file = db_file
+        self.lock = threading.Lock()  # 线程锁
+        self.load()
+
+    def load(self):
+        """加载数据库"""
+        if os.path.exists(self.db_file):
+            with open(self.db_file, 'r', encoding='utf-8') as f:
+                self.data = json.load(f)
+        else:
+            self.data = {
+                "users": {},
+                "keys": {}
+            }
+            self.save()
+
+    def save(self):
+        """保存数据库"""
+        # 注意：调用者需要先获取锁
+        with open(self.db_file, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f, indent=2, ensure_ascii=False)
+
+    def add_user(self, user_id: int, username: str = "Unknown") -> bool:
+        """
+        添加新用户
+        :param user_id: 用户ID
+        :param username: 用户名
+        :return: True表示新添加的用户，False表示已存在的用户
+        """
+        with self.lock:
+            user_id_str = str(user_id)
+            if user_id_str not in self.data["users"]:
+                self.data["users"][user_id_str] = {
+                    "id": user_id,
+                    "username": username,
+                    "role": "普通用户",  # 默认为普通用户
+                    "points": INITIAL_POINTS,  # 新用户初始积分
+                    "task_numbers": []  # 当前任务序号列表
+                }
+                self.save()
+                return True  # 新用户
+            return False  # 用户已存在
+
+    def get_user(self, user_id: int) -> Optional[Dict]:
+        """获取用户信息"""
+        user_id_str = str(user_id)
+        return self.data["users"].get(user_id_str)
+
+    def update_user_role(self, user_id: int, role: str):
+        """更新用户身份"""
+        with self.lock:
+            user = self.get_user(user_id)
+            if user:
+                user_id_str = str(user_id)
+                self.data["users"][user_id_str]["role"] = role
+                self.save()
+                return True
+            return False
+
+    def add_points(self, user_id: int, points: int):
+        """为用户增加积分"""
+        with self.lock:
+            user = self.get_user(user_id)
+            if user:
+                user_id_str = str(user_id)
+                self.data["users"][user_id_str]["points"] += points
+                self.save()
+                return True
+            return False
+
+    def consume_points(self, user_id: int, points: int) -> bool:
+        """消耗用户积分"""
+        with self.lock:
+            user = self.get_user(user_id)
+            if user and user["points"] >= points:
+                user_id_str = str(user_id)
+                self.data["users"][user_id_str]["points"] -= points
+                self.save()
+                return True
+        return False
+
+    def get_user_points(self, user_id: int) -> int:
+        """获取用户积分"""
+        user = self.get_user(user_id)
+        return user["points"] if user else 0
+
+    def generate_keys(self, count: int = 10) -> List[str]:
+        """生成密钥"""
+        keys = []
+        for _ in range(count):
+            key = self._generate_key()
+            self.data["keys"][key] = {
+                "used": False,
+                "used_by": None,
+                "used_time": None
+            }
+            keys.append(key)
+        self.save()
+        return keys
+
+    def _generate_key(self) -> str:
+        """生成单个密钥（16位字母数字混合）"""
+        chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # 去除容易混淆的字符
+        return ''.join(random.choice(chars) for _ in range(16))
+
+    def validate_key(self, key: str) -> bool:
+        """验证密钥是否有效且未使用"""
+        key_data = self.data["keys"].get(key)
+        return key_data is not None and not key_data["used"]
+
+    def use_key(self, key: str, user_id: int) -> bool:
+        """使用密钥"""
+        with self.lock:
+            if not self.validate_key(key):
+                return False
+
+            # 标记密钥为已使用
+            self.data["keys"][key]["used"] = True
+            self.data["keys"][key]["used_by"] = user_id
+            self.data["keys"][key]["used_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        # 为用户增加积分（需要独立锁）
+        self.add_points(user_id, KEY_REWARD_POINTS)
+
+        # 将用户身份修改为会员（需要独立锁）
+        self.update_user_role(user_id, "会员")
+
+        return True
+
+    def get_key_status(self, key: str) -> Optional[Dict]:
+        """获取密钥状态"""
+        return self.data["keys"].get(key)
+
+    def add_task_number(self, user_id: int, task_number: int):
+        """为用户添加任务序号"""
+        with self.lock:
+            user = self.get_user(user_id)
+            if user:
+                user_id_str = str(user_id)
+                self.data["users"][user_id_str]["task_numbers"].append(task_number)
+                self.save()
+                return True
+        return False
+
+    def get_all_task_numbers(self) -> List[int]:
+        """获取所有用户的任务序号（用于计算全局进度）"""
+        all_tasks = []
+        for user_data in self.data["users"].values():
+            all_tasks.extend(user_data.get("task_numbers", []))
+        return sorted(all_tasks)
+
+
+# 代理配置
+USE_PROXY = True  # 设置为 False 禁用代理
+PROXY_SETTINGS = {
+    "http": "http://127.0.0.1:7890",
+    "https": "http://127.0.0.1:7890"
+}
+
+# 积分配置
+INITIAL_POINTS = 30  # 新用户初始积分
+KEY_REWARD_POINTS = 100  # 密钥兑换可获得的积分
+
+# 根据设置决定是否使用代理
+if USE_PROXY:
+    # 设置环境变量代理
+    os.environ['HTTP_PROXY'] = PROXY_SETTINGS["http"]
+    os.environ['HTTPS_PROXY'] = PROXY_SETTINGS["https"]
+else:
+    # 清除环境变量代理
+    if 'HTTP_PROXY' in os.environ:
+        del os.environ['HTTP_PROXY']
+    if 'HTTPS_PROXY' in os.environ:
+        del os.environ['HTTPS_PROXY']
+
+# Telegram配置
+TELEGRAM_BOT_TOKEN = "8413449344:AAE3r29-jiHjDpmFm4AMZYWH78iwwczq0QM"
+AUTHORIZED_USER_IDS = []  # 设置授权用户的Telegram ID列表, 为空则允许所有用户
+
+# ComfyUI配置
+COMFYUI_FOLDER = r"D:\AI_Graph\ConfyUI-aki\ComfyUI-aki-v1"
+COMFYUI_INPUT_FOLDER = os.path.join(COMFYUI_FOLDER, "input")
+COMFYUI_OUTPUT_FOLDER = os.path.join(COMFYUI_FOLDER, "output")
+
+# 工作流配置
+WORKFLOW_CONFIGS = {
+    "面部重绘": {
+        "seed_id": 9,
+        "input_image_id": 27,
+        "output_image_id": 72,
+        "workflow": "FaceFix.json",
+        "remove_iterations": 1,
+        "points_cost": 1  # 每张消耗10积分
+    },
+    "去除背景杂物": {
+        "seed_id": 65,
+        "input_image_id": 41,
+        "output_image_id": 224,
+        "workflow": "BackgroundRemove.json",
+        "remove_iterations": 1,
+        "points_cost": 2
+    },
+    "服装移除": {
+        "seed_id": 65,
+        "input_image_id": 41,
+        "output_image_id": 181,
+        "workflow": "Qwen_remove.json",
+        "remove_iterations": 1,
+        "points_cost": 2
+    },
+    "胸部重绘": {
+        "seed_id": 137,
+        "input_image_id": 41,
+        "output_image_id": 181,
+        "workflow": "boobs_fix.json",
+        "remove_iterations": 1,
+        "points_cost": 1
+    }
+}
+
+# 默认工作流配置
+DEFAULT_WORKFLOW = "服装移除"
+
+# 全局任务序号（所有用户共享）
+global_task_counter = 0
+task_counter_lock = threading.Lock()
+
+# 用户自定义工作流配置
+user_workflows = {}  # {chat_id: workflow_name}
+
+# 密钥兑换状态（记录用户是否在兑换密钥流程中）
+key_exchange_states = {}  # {chat_id: "waiting_for_key"}
+
+
+def get_proxies():
+    """根据USE_PROXY设置返回代理配置"""
+    return PROXY_SETTINGS if USE_PROXY else None
+
+
+def generate_random_seed():
+    """生成15位随机数种子"""
+    return random.randint(10**14, 10**15 - 1)
+
+
+def check_comfyui_server(max_attempts=3, check_delay=2):
+    """检查ComfyUI服务器是否可访问"""
+    for attempt in range(max_attempts):
+        try:
+            response = request.urlopen("http://127.0.0.1:8188", timeout=3)
+            return True
+        except error.URLError:
+            if attempt < max_attempts - 1:
+                time.sleep(check_delay)
+            else:
+                return False
+
+
+# ComfyUI 服务器状态监控
+comfyui_running = True
+
+
+def queue_prompt(prompt_workflow, max_retries=3, retry_delay=2):
+    """将prompt workflow发送到ComfyUI服务器并排队执行"""
+    p = {"prompt": prompt_workflow}
+    data = json.dumps(p).encode('utf-8')
+    req = request.Request("http://127.0.0.1:8188/prompt", data=data)
+
+    for attempt in range(max_retries):
+        try:
+            print(f"    正在提交工作流到 ComfyUI...")
+            response = request.urlopen(req, timeout=10)
+            result = json.loads(response.read().decode('utf-8'))
+            prompt_id = result.get('prompt_id')
+            print(f"    工作流已提交，prompt_id: {prompt_id}")
+            return prompt_id
+        except error.URLError as e:
+            print(f"    URL错误 (尝试 {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                print(f"    工作流提交失败，超过最大重试次数")
+                return None
+        except Exception as e:
+            print(f"    发送失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                print(f"    工作流提交失败，超过最大重试次数")
+                return None
+
+
+def wait_for_completion(prompt_id, check_interval=2, timeout=120):
+    """轮询检查任务完成状态"""
+    start_time = time.time()
+    check_count = 0
+
+    while time.time() - start_time < timeout:
+        check_count += 1
+        try:
+            req = request.Request(f"http://127.0.0.1:8188/history/{prompt_id}")
+            response = request.urlopen(req, timeout=5)
+            result = json.loads(response.read().decode('utf-8'))
+
+            if prompt_id in result:
+                history_data = result[prompt_id]
+                status = history_data.get('status', {}).get('completed', False)
+                if status:
+                    print(f"    任务已完成 (耗时: {int(time.time() - start_time)}秒, 检查次数: {check_count})")
+                    return True
+
+                if history_data.get('status', {}).get('exec_info', None):
+                    exec_info = history_data['status'].get('exec_info')
+                    if exec_info and 'error' in str(exec_info).lower():
+                        print(f"    任务执行出错: {exec_info}")
+                        return False
+
+            if check_count % 10 == 0:  # 每20秒打印一次进度
+                elapsed = int(time.time() - start_time)
+                print(f"    等待任务完成... (已等待 {elapsed}秒, 检查次数: {check_count})")
+
+        except error.HTTPError as e:
+            if e.code == 404:
+                if check_count <= 5 or check_count % 20 == 0:
+                    print(f"    任务尚未开始 (检查次数: {check_count})")
+                pass
+            else:
+                print(f"    HTTP错误: {e.code} - {e}")
+        except Exception as e:
+            print(f"    检查状态时出错: {e}")
+
+        time.sleep(check_interval)
+
+    elapsed = int(time.time() - start_time)
+    print(f"    等待超时 (超过 {timeout} 秒, 总检查次数: {check_count})")
+    return False
+
+
+def save_image_with_unique_name(source_path, target_folder):
+    """保存图像文件到指定文件夹，如果文件名重复则使用随机种子重命名"""
+    original_filename = os.path.basename(source_path)
+    file_ext = os.path.splitext(original_filename)[1]
+    image_basename = os.path.splitext(original_filename)[0]
+
+    target_path = os.path.join(target_folder, original_filename)
+
+    if not os.path.exists(target_path):
+        shutil.copy2(source_path, target_path)
+        return original_filename
+    else:
+        random_seed = generate_random_seed()
+        new_filename = f"{random_seed}{file_ext}"
+        target_path = os.path.join(target_folder, new_filename)
+
+        while os.path.exists(target_path):
+            random_seed = generate_random_seed()
+            new_filename = f"{random_seed}{file_ext}"
+            target_path = os.path.join(target_folder, new_filename)
+
+        shutil.copy2(source_path, target_path)
+        return new_filename
+
+
+# Telegram API函数
+def send_message(chat_id: str, text: str):
+    """发送文本消息到Telegram"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": chat_id,
+        "text": text
+    }
+    try:
+        response = requests.post(url, json=data, timeout=10, proxies=get_proxies())
+        return response.json()
+    except Exception as e:
+        print(f"发送消息失败: {e}")
+        return None
+
+
+def send_photo(chat_id: str, photo_path: str, caption: Optional[str] = None):
+    """发送图片到Telegram"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    data = {"chat_id": chat_id}
+    if caption:
+        data["caption"] = caption
+
+    try:
+        with open(photo_path, 'rb') as photo_file:
+            files = {"photo": photo_file}
+            response = requests.post(url, data=data, files=files, timeout=30, proxies=get_proxies())
+        return response.json()
+    except Exception as e:
+        print(f"发送图片失败: {e}")
+        return None
+
+
+def download_telegram_photo(file_id: str):
+    """从Telegram下载图片并返回保存路径"""
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile"
+        response = requests.get(url, params={"file_id": file_id}, timeout=10, proxies=get_proxies())
+        file_info = response.json()
+
+        if not file_info.get("ok"):
+            print(f"获取文件信息失败: {file_info}")
+            return None
+
+        file_path = file_info["result"]["file_path"]
+        download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+
+        response = requests.get(download_url, timeout=30, proxies=get_proxies())
+
+        original_filename = os.path.basename(file_path)
+        temp_path = os.path.join(COMFYUI_INPUT_FOLDER, f"temp_{original_filename}")
+
+        with open(temp_path, 'wb') as f:
+            f.write(response.content)
+
+        return temp_path
+
+    except Exception as e:
+        print(f"下载Telegram图片失败: {e}")
+        return None
+
+
+def calculate_queue_position(user_task_number: int, all_task_numbers: List[int]) -> tuple:
+    """
+    计算排队位置
+    :param user_task_number: 用户提交的任务序号
+    :param all_task_numbers: 所有任务序号列表
+    :return: (当前位置, 已执行任务数, 等待任务数)
+    """
+    if not all_task_numbers:
+        return (user_task_number, 0, 0)
+
+    # 找出所有小于用户任务序号的任务
+    completed_tasks = [t for t in all_task_numbers if t < user_task_number]
+    waiting_tasks = len(completed_tasks)
+
+    return (user_task_number, len(all_task_numbers) - waiting_tasks, waiting_tasks)
+
+
+def process_image(image_path, chat_id: str, workflow_name: str, user_id: int, task_number: int, db: UserDatabase):
+    """
+    处理图像并发送结果到Telegram
+    :param image_path: 图像文件路径
+    :param chat_id: Telegram聊天ID
+    :param workflow_name: 工作流名称
+    :param user_id: 用户ID
+    :param task_number: 任务序号
+    :param db: 数据库实例
+    """
+    if not comfyui_running:
+        send_message(chat_id, "❌ ComfyUI 服务器未运行，无法处理图片")
+        return
+
+    try:
+        if workflow_name not in WORKFLOW_CONFIGS:
+            send_message(chat_id, f"错误: 未知的工作流 {workflow_name}")
+            return
+
+        config = WORKFLOW_CONFIGS[workflow_name]
+        remove_iterations = config.get("remove_iterations", 1)
+        points_cost = config.get("points_cost", 10)
+
+        send_message(chat_id, 
+            f"开始{workflow_name}处理..."
+            f"任务编号: {task_number}"
+        )
+
+        # 保存图像到ComfyUI input文件夹
+        print(f"保存图像到 input 文件夹...")
+        image_filename = save_image_with_unique_name(image_path, COMFYUI_INPUT_FOLDER)
+        image_basename = os.path.splitext(image_filename)[0]
+
+        print(f"图像文件名: {image_filename}")
+
+        # 初始化工作流处理器
+        workflow_handler = ComfyUIWorkflow(
+            seed_id=config["seed_id"],
+            input_image_id=config["input_image_id"],
+            output_image_id=config["output_image_id"],
+            workflow=config["workflow"]
+        )
+
+        # 加载工作流
+        try:
+            workflow_handler.load_workflow()
+        except FileNotFoundError as e:
+            send_message(chat_id, str(e))
+            return
+
+        # 进行多次处理
+        suffixes = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+                    'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T']
+
+        success_count = 0
+        total_cost = 0
+
+        for iteration in range(remove_iterations):
+            if not comfyui_running:
+                send_message(chat_id, f"❌ ComfyUI 服务器已关闭，处理中止（已完成 {iteration}/{remove_iterations}）")
+                return
+
+            prompt_workflow = workflow_handler.create_workflow_copy()
+            seed_value = generate_random_seed()
+            prompt_workflow[workflow_handler.seed_id]["inputs"]["seed"] = int(seed_value)
+
+            current_suffix = suffixes[iteration]
+            output_prefix = f"AutoOutput\\{image_basename}_{current_suffix}"
+
+            prompt_workflow[workflow_handler.input_image_id]["inputs"]["image"] = image_filename
+            prompt_workflow[workflow_handler.output_image_id]["inputs"]["filename_prefix"] = output_prefix
+
+            print(f"\n迭代 {iteration+1}/{remove_iterations}: {current_suffix}")
+            send_message(chat_id, f"处理中... {iteration+1}/{remove_iterations} ({current_suffix})")
+
+            # 提交工作流
+            prompt_id = queue_prompt(prompt_workflow)
+
+            if not prompt_id:
+                send_message(chat_id, f"提交工作流失败，跳过此迭代")
+                continue
+
+            # 等待任务完成
+            if not wait_for_completion(prompt_id, check_interval=2, timeout=300):
+                send_message(chat_id, f"任务未完成，继续下一个迭代")
+                continue
+
+            # 获取并发送当前迭代的结果
+            search_pattern = f"{image_basename}_{current_suffix}"
+            output_file = None
+
+            for root, dirs, files in os.walk(COMFYUI_OUTPUT_FOLDER):
+                for file in files:
+                    if file.startswith(search_pattern):
+                        output_file = os.path.join(root, file)
+                        break
+                if output_file:
+                    break
+
+            if output_file and os.path.exists(output_file):
+                send_photo(chat_id, output_file, f"{workflow_name} - 处理结果 {iteration+1}/{remove_iterations}")
+                time.sleep(1)
+                
+                # 成功生成，消耗10积分
+                if db.consume_points(user_id, points_cost):
+                    success_count += 1
+                    total_cost += points_cost
+                    print(f"    消耗积分: {points_cost}")
+                else:
+                    send_message(chat_id, f"⚠️ 积分不足，已生成{success_count}张")
+                    break
+            else:
+                send_message(chat_id, f"未找到迭代 {iteration+1} 的输出文件")
+
+        # 移除已完成的任务序号
+        with db.lock:
+            if str(task_number) in db.data["users"][str(user_id)]["task_numbers"]:
+                db.data["users"][str(user_id)]["task_numbers"].remove(task_number)
+                db.save()
+
+        send_message(chat_id, 
+            f"✅ {workflow_name}处理完成！共发送 {success_count} 张处理结果\n"
+            f"💰 本次消耗积分: {total_cost}\n"
+            f"🎯 剩余积分: {db.get_user_points(user_id)}"
+        )
+        # 清理临时文件
+        if "temp_" in os.path.basename(image_path):
+            try:
+                os.remove(image_path)
+            except:
+                pass
+
+    except Exception as e:
+        error_msg = f"处理图像时出错: {str(e)}"
+        print(error_msg)
+        send_message(chat_id, error_msg)
+
+
+def is_authorized(user_id: int) -> bool:
+    """检查用户是否授权"""
+    if not AUTHORIZED_USER_IDS:
+        return True
+    return user_id in AUTHORIZED_USER_IDS
+
+
+def get_user_workflow(chat_id: str) -> str:
+    """获取用户当前的工作流设置"""
+    return user_workflows.get(chat_id, DEFAULT_WORKFLOW)
+
+
+# 命令到工作流名称的映射
+COMMAND_TO_WORKFLOW = {
+    "/FF": "面部重绘",
+    "/BR": "去除背景杂物",
+    "/CR": "服装移除",
+    "/BF": "胸部重绘",
+    "/FaceFix": "面部重绘",
+    "/BackgroundRemove": "去除背景杂物",
+    "/Qwen_remove": "服装移除",
+    "/boobs_fix": "胸部重绘"
+}
+
+def set_user_workflow(chat_id: str, workflow_name: str) -> bool:
+    """设置用户的工作流"""
+    # 支持直接工作流名称或命令
+    if workflow_name in WORKFLOW_CONFIGS:
+        user_workflows[chat_id] = workflow_name
+        return True
+    elif workflow_name in COMMAND_TO_WORKFLOW:
+        user_workflows[chat_id] = COMMAND_TO_WORKFLOW[workflow_name]
+        return True
+    return False
+
+
+def send_welcome_message(chat_id: str, user_info: dict, db: UserDatabase):
+    """发送欢迎消息"""
+    current_workflow = get_user_workflow(chat_id)
+    admin_commands = "\n/generate_keys - 生成新密钥（仅管理员）" if user_info['role'] == "管理员" else ""
+
+    # 生成工作流列表（带积分消耗）
+    workflow_list = ""
+    for name, config in WORKFLOW_CONFIGS.items():
+        cmd_map = {
+            "面部重绘": "/FF",
+            "去除背景杂物": "/BR",
+            "服装移除": "/CR",
+            "胸部重绘": "/BF"
+        }
+        cmd = cmd_map.get(name, f"/{name}")
+        total_cost = config["points_cost"] * config["remove_iterations"]
+        workflow_list += f"• {cmd}({name}) - {total_cost}积分/张\n"
+
+    send_message(chat_id,
+               "🤖 欢迎使用 ComfyUI 图像处理机器人 V2！\n\n"
+               f"发送图片给我，将使用「{current_workflow}」处理方式。\n\n"
+               f"支持格式: JPG, PNG, JPEG\n\n"
+               f"👤 身份: {user_info['role']}\n"
+               f"💰 积分: {user_info['points']}\n"
+               f"当前图像处理方式: {current_workflow}\n"
+               "可用的图像处理方式:\n"
+               f"{workflow_list}"
+               "点击以切换图像处理方式\n\n"
+               "发送「/key」进行积分兑换\n"
+               "发送「/points」查询积分\n"
+               "发送「/info」查看个人信息\n"
+               "发送「/help」查看使用说明"
+               f"{admin_commands}")
+
+
+def monitor_comfyui_server():
+    """持续监控 ComfyUI 服务器状态"""
+    global comfyui_running
+    while comfyui_running:
+        try:
+            response = request.urlopen("http://127.0.0.1:8188", timeout=2)
+            time.sleep(5)
+        except error.URLError:
+            print("⚠️ ComfyUI 服务器已关闭！")
+            comfyui_running = False
+            break
+        except Exception as e:
+            print(f"⚠️ 检测 ComfyUI 服务器时出错: {e}")
+            comfyui_running = False
+            break
+
+
+def main():
+    global comfyui_running, global_task_counter
+    
+    print("========== Telegram机器人启动 V2 ==========")
+    print(f"Bot Token: {TELEGRAM_BOT_TOKEN[:20]}...")
+
+    if AUTHORIZED_USER_IDS:
+        print(f"授权用户ID: {AUTHORIZED_USER_IDS}")
+    else:
+        print(f"授权用户ID: 所有用户（测试模式）")
+        print("⚠️  警告: 未设置授权用户ID列表，允许所有用户访问")
+
+    print(f"默认工作流: {DEFAULT_WORKFLOW}")
+    print(f"可用工作流: {list(WORKFLOW_CONFIGS.keys())}")
+
+    # 初始化数据库
+    print("\n初始化用户数据库...")
+    db = UserDatabase("user_database.json")
+    print(f"数据库已加载: {db.db_file}")
+    print(f"当前用户数: {len(db.data['users'])}")
+    print(f"可用密钥数: {sum(1 for k in db.data['keys'].values() if not k['used'])}")
+
+    # 生成密钥（首次运行时）
+    if not db.data["keys"]:
+        print("\n生成初始密钥...")
+        keys = db.generate_keys(10)
+        print(f"已生成 {len(keys)} 个密钥:")
+        for i, key in enumerate(keys, 1):
+            print(f"  {i}. {key}")
+
+    # 检查ComfyUI服务器
+    print("\n检查ComfyUI服务器状态...")
+    if not check_comfyui_server():
+        print("请先启动ComfyUI服务器")
+        return
+    else:
+        print("ComfyUI服务器已运行")
+
+    # 启动 ComfyUI 服务器监控线程
+    print("\n启动 ComfyUI 服务器监控...")
+    monitor_thread = threading.Thread(target=monitor_comfyui_server, daemon=True)
+    monitor_thread.start()
+
+    offset = 0
+    print("\n========== 开始监听消息 ==========")
+
+    while True:
+        try:
+            if not comfyui_running:
+                print("⚠️ ComfyUI 服务器未运行，暂停处理新请求...")
+                time.sleep(5)
+                continue
+
+            updates = requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+                params={"timeout": 30, "offset": offset if offset else None},
+                timeout=40,
+                proxies=get_proxies()
+            ).json()
+
+            if not updates.get("ok"):
+                time.sleep(5)
+                continue
+
+            for update in updates["result"]:
+                offset = update["update_id"] + 1
+
+                if "message" not in update:
+                    continue
+
+                message = update["message"]
+                user_id = message.get("from", {}).get("id")
+                chat_id = message.get("chat", {}).get("id")
+                username = message.get("from", {}).get("username", "Unknown")
+
+                print(f"\n收到消息 - 用户ID: {user_id} (@{username}), 聊天ID: {chat_id}")
+                print(f"消息类型: {list(message.keys())}")  # 添加调试输出
+
+                # 检查授权
+                if not is_authorized(user_id):
+                    print(f"用户 {user_id} 未授权，忽略消息")
+                    send_message(chat_id, "❌ 您没有权限使用此机器人")
+                    continue
+
+                # 添加或更新用户
+                print("添加或更新用户到数据库...")
+                is_new_user = db.add_user(user_id, username)
+                user_info = db.get_user(user_id)
+                print(f"用户信息已获取")
+
+                # 如果是新用户，自动发送欢迎消息
+                if is_new_user:
+                    print(f"检测到新用户，发送欢迎消息...")
+                    send_welcome_message(chat_id, user_info, db)
+
+                # 处理图片消息
+                if "photo" in message:
+                    print("处理图片消息...")
+                    try:
+                        photos = message["photo"]
+                        largest_photo = max(photos, key=lambda p: p.get("file_size", 0))
+                        file_id = largest_photo["file_id"]
+                    except Exception as e:
+                        print(f"解析photo字段失败: {e}")
+                        continue
+
+                    # 检查积分
+                    try:
+                        user_info = db.get_user(user_id)
+                        current_points = db.get_user_points(user_id)
+                        workflow_name = get_user_workflow(chat_id)
+                        config = WORKFLOW_CONFIGS[workflow_name]
+                        points_cost = config.get("points_cost", 10) * config.get("remove_iterations", 1)
+                    except Exception as e:
+                        print(f"获取积分配置失败: {e}")
+                        continue
+
+                    # 管理员免积分
+                    if user_info['role'] != "管理员" and current_points < points_cost:
+                        send_message(chat_id, f"❌ 积分不足！\n当前积分: {current_points}\n需要积分: {points_cost}\n\n发送「/密钥兑换」获取积分")
+                        continue
+
+                    # 分配任务序号
+                    try:
+                        with task_counter_lock:
+                            global_task_counter += 1
+                            current_task_number = global_task_counter
+                        print(f"任务序号: {current_task_number}")
+                    except Exception as e:
+                        print(f"分配任务序号失败: {e}")
+                        continue
+
+                    # 添加到用户任务列表
+                    try:
+                        print(f"添加任务到用户列表...")
+                        db.add_task_number(user_id, current_task_number)
+                        print(f"任务已添加到用户列表")
+                    except Exception as e:
+                        print(f"添加任务序号失败: {e}")
+                        continue
+
+                    # 计算排队位置
+                    all_task_numbers = db.get_all_task_numbers()
+                    current_task, completed_count, waiting_count = calculate_queue_position(
+                        current_task_number, all_task_numbers
+                    )
+                    wait_time = (waiting_count + 1) * 30  # 每张图30秒
+
+                    send_message(chat_id, 
+                        f"收到图片，正在使用「{workflow_name}」处理...\n"
+                        f"📊 当前排队序列: {current_task_number}\n"
+                        f"⏳ 前面还有 {waiting_count} 个待执行任务\n"
+                        f"⏰ 预计等待时间: {wait_time} 秒 ({wait_time//60}分{wait_time%60}秒)"
+                        )
+
+                    print(f"  开始下载图片...")
+                    image_path = download_telegram_photo(file_id)
+
+                    if image_path:
+                        print(f"  图片已下载: {image_path}")
+                        try:
+                            thread = threading.Thread(
+                                target=process_image,
+                                args=(image_path, chat_id, workflow_name, user_id, current_task_number, db)
+                            )
+                            thread.daemon = True
+                            thread.start()
+                            print(f"  处理线程已启动")
+                        except Exception as e:
+                            print(f"启动处理线程失败: {e}")
+                            send_message(chat_id, f"❌ 启动处理失败: {e}")
+                    else:
+                        send_message(chat_id, "❌ 下载图片失败")
+
+                # 处理文本消息
+                elif "text" in message:
+                    text = message["text"].strip()
+
+                    if text == "/start":
+                        user_info = db.get_user(user_id)
+                        send_welcome_message(chat_id, user_info, db)
+
+                    elif text == "/help":
+                        current_workflow = get_user_workflow(chat_id)
+                        user_info = db.get_user(user_id)
+                        admin_commands = "\n/generate_keys - 生成新密钥（仅管理员）" if user_info['role'] == "管理员" else ""
+
+                        # 生成工作流列表（带积分消耗）
+                        workflow_list = ""
+                        for name, config in WORKFLOW_CONFIGS.items():
+                            cmd_map = {
+                                "面部重绘": "/FF",
+                                "去除背景杂物": "/BR",
+                                "服装移除": "/CR",
+                                "胸部重绘": "/BF"
+                            }
+                            cmd = cmd_map.get(name, f"/{name}")
+                            total_cost = config["points_cost"] * config["remove_iterations"]
+                            workflow_list += f"{cmd}({name}) - {total_cost}积分/张\n"
+
+                        send_message(chat_id,
+                                   "📖 使用说明:\n\n"
+                                   "1. 发送图片给我\n"
+                                   "2. 图片将自动使用当前处理方式处理\n"
+                                   "3. 消耗积分生成图片\n"
+                                   "4. 等待处理完成\n\n"
+                                   "命令:\n"
+                                   "/start - 开始\n"
+                                   "/help - 帮助\n"
+                                   "/info - 查看个人信息\n"
+                                   "/points - 查询积分\n"
+                                   "切换处理方式:\n"
+                                   f"{workflow_list}"
+                                   "密钥兑换: 发送「/key」"
+                                   f"{admin_commands}")
+
+                    elif text == "/info":
+                        user_info = db.get_user(user_id)
+                        user_tasks = user_info.get("task_numbers", [])
+                        send_message(chat_id,
+                                   f"👤 用户信息\n\n"
+                                   f"用户ID: {user_id}\n"
+                                   f"身份: {user_info['role']}\n"
+                                   f"💰 积分: {user_info['points']}\n"
+                                   f"📋 进行中任务: {len(user_tasks)} 个\n"
+                                   f"当前处理方式: {get_user_workflow(chat_id)}")
+
+                    elif text == "/points":
+                        points = db.get_user_points(user_id)
+                        send_message(chat_id, f"💰 您的积分: {points}")
+
+                    elif text == "/key":
+                        key_exchange_states[chat_id] = "waiting_for_key"
+                        send_message(chat_id, "🔑 请直接回复密钥进行兑换")
+
+                    elif chat_id in key_exchange_states and key_exchange_states[chat_id] == "waiting_for_key":
+                        # 验证并兑换密钥
+                        if db.validate_key(text):
+                            if db.use_key(text, user_id):
+                                send_message(chat_id, "✅ 密钥兑换成功！\n\n"
+                                                   f"💰 获得200积分\n"
+                                                   f"👤 身份已升级为「会员」\n"
+                                                   f"当前积分: {db.get_user_points(user_id)}")
+                                del key_exchange_states[chat_id]
+                            else:
+                                send_message(chat_id, "❌ 密钥使用失败")
+                        else:
+                            send_message(chat_id, "❌ 无效的密钥或密钥已使用")
+                            del key_exchange_states[chat_id]
+
+                    elif text in COMMAND_TO_WORKFLOW:
+                        workflow_name = COMMAND_TO_WORKFLOW[text]
+                        if set_user_workflow(chat_id, text):
+                            send_message(chat_id, f"✅ 已切换到「{workflow_name}」处理方式")
+                        else:
+                            send_message(chat_id, "❌ 切换失败")
+
+                    elif text == "/generate_keys":
+                        user_info = db.get_user(user_id)
+                        if user_info['role'] != "管理员":
+                            send_message(chat_id, "❌ 只有管理员可以使用此功能")
+                        else:
+                            keys = db.generate_keys(1)
+                            send_message(chat_id, f"🔑 已生成新密钥:\n\n{keys[0]}")
+
+                    else:
+                        print(f"未处理的文本消息: {text}")
+                        # 生成工作流列表（带积分消耗）
+                        workflow_list = ""
+                        for name, config in WORKFLOW_CONFIGS.items():
+                            cmd_map = {
+                                "面部重绘": "/FF",
+                                "去除背景杂物": "/BR",
+                                "服装移除": "/CR",
+                                "胸部重绘": "/BF"
+                            }
+                            cmd = cmd_map.get(name, f"/{name}")
+                            total_cost = config["points_cost"] * config["remove_iterations"]
+                            workflow_list += f"{cmd}({name}) - {total_cost}积分/张\n"
+
+                        send_message(chat_id, f"请发送图片给我，我会处理并返回结果\n\n"
+                                               f"切换处理方式:\n"
+                                               f"{workflow_list}"
+                                               f"发送「/key」进行积分兑换")
+
+                else:
+                    # 其他类型的消息（如 service message 等）
+                    print(f"未处理的消息类型: {message}")
+                    continue
+
+        except KeyboardInterrupt:
+            print("\n\n程序被用户中断")
+            comfyui_running = False
+            break
+        except requests.exceptions.ProxyError as e:
+            print(f"代理错误: {e}")
+            print("检查代理设置或禁用代理（USE_PROXY = False）")
+            print("按 Ctrl+C 退出，或等待自动重连...")
+            time.sleep(5)
+        except requests.exceptions.SSLError as e:
+            print(f"SSL连接错误: {e}")
+            print("尝试重新连接...")
+            time.sleep(10)
+        except requests.exceptions.ConnectionError as e:
+            print(f"连接错误: {e}")
+            print("网络连接异常，等待自动重连...")
+            time.sleep(5)
+        except Exception as e:
+            print(f"运行出错: {e}")
+            print("按 Ctrl+C 退出，或等待自动重连...")
+            time.sleep(5)
+
+    print("程序结束")
+
+
+if __name__ == "__main__":
+    main()
