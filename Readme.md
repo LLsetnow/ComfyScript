@@ -132,6 +132,91 @@
   - 多种工作流模式：面部重绘、去除背景杂物、服装移除、胸部重绘、图像编辑
 - **使用方法**：`python TeleBotComfyuiV3.py`
 
+## 飞书 Bot 脚本
+
+### FeiShuBotComfyuiV7_Final.py
+- **功能**：飞书机器人 V7 最终版本
+- **新功能**：
+  - 基于飞书 SDK WebSocket Client 实现长连接监听事件
+  - 集成 ComfyUI 图像处理功能
+  - 支持用户积分系统
+  - 支持密钥兑换功能
+  - 支持多工作流切换（5种模式）
+  - 支持任务队列管理
+  - 支持自然语言对话（集成 DeepSeek AI）
+  - 支持文生图功能
+  - 支持消息去重机制
+- **工作流模式**：
+  - FaceFix（面部重绘）- 1积分/张
+  - BackgroundRemove（去除背景杂物）- 2积分/张
+  - Qwen_remove（服装移除）- 2积分/张
+  - BoobsFix（胸部重绘）- 1积分/张
+  - Qwen_edit（图像编辑）- 2积分/张
+- **使用方法**：
+  - 运行：`python FeiShuBotComfyuiV7_Final.py` 或双击 `FeiShuBotV7_Final_启动.bat`
+  - 启动后发送 `/start` 查看帮助信息
+  - 发送图片进行处理
+  - 使用自然语言生成图片（如：帮我生成一张美女图）
+
+### FeiShuBotComfyuiV8_Refactored.py
+- **功能**：飞书机器人 V8 重构版本
+- **新功能**：
+  - 完全重构的模块化架构
+  - 统一的消息去重管理器
+  - 结构化的任务队列系统
+  - 清晰的错误处理机制
+  - 配置管理优化
+  - 图像编辑模式优化（先接收图片，再询问编辑提示词）
+- **模块结构**：
+  - ConfigManager：配置文件管理
+  - MessageDeduplicator：消息去重
+  - TaskQueue：任务队列管理
+  - ComfyUIWorkflow：工作流处理
+  - ImageProcessor：图像处理
+  - FeishuAPI：飞书API交互
+  - FeishuMessenger：飞书消息发送
+  - NLProcessor：自然语言处理
+  - MessageHandler：消息处理
+- **使用方法**：
+  - 运行：`python FeiShuBotComfyuiV8_Refactored.py` 或双击 `FeiShuBotV8_启动.bat`
+  - 支持与 V7 版本相同的功能
+  - 代码结构更清晰，易于维护和扩展
+
+### 飞书机器人使用指南
+- **配置文件**：`config.json5`
+  - 飞书应用配置（app_id、app_secret）
+  - ComfyUI 服务器配置
+  - 工作流配置（节点ID、文件名、积分消耗）
+  - DeepSeek API 配置
+  - 积分系统配置
+
+- **基础命令**：
+  - `/start` - 启动机器人
+  - `/help` - 查看帮助
+  - `/queue` 或 `/status` - 查看任务队列状态
+  - `/FaceFix` - 切换到面部重绘模式
+  - `/BackgroundRemove` - 切换到去除背景杂物模式
+  - `/Qwen_remove` - 切换到服装移除模式
+  - `/BoobsFix` - 切换到胸部重绘模式
+  - `/Qwen_edit` - 切换到图像编辑模式
+
+- **自然语言功能**：
+  - 切换工作流：如"切换到面部重绘"、"改成去除背景"
+  - 文生图：如"帮我生成一张美女图"、"画一个风景"
+  - 对话交互：支持普通对话
+
+- **图像编辑模式流程**：
+  1. 切换到图像编辑模式（`/Qwen_edit`）
+  2. 发送待编辑的图片
+  3. 输入编辑提示词（如："给人物加上墨镜"）
+  4. 等待处理结果
+
+- **任务队列系统**：
+  - 支持多张图片批量处理
+  - 自动分配任务序号
+  - 实时显示队列位置和等待任务数
+  - 处理完成后自动返回结果
+
 ## 工具脚本
 
 ### build_exe.py
