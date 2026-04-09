@@ -1,232 +1,200 @@
-# 自动化脚本
+# ComfyUI 飞书机器人
 
-## 工作流脚本
+基于飞书 SDK WebSocket 长连接实现的图像处理机器人，集成了 ComfyUI 工作流自动化处理能力。
 
-### 前提准备
-- 打开开发者模式
-- 将对应工作流导出为 API 格式
+## 功能特性
 
-### 脚本配置
-- **Comfyui自动化脚本.py**
-  - 运行前提前打开 ComfyUI
-  - 配置输入图像路径
-    - 默认输入文件夹为：`D:\桌面中转\input`
-  - 配置输出图像文件名
-    - 默认输出文件夹为：`D:\AI_Graph\ConfyUI-aki\ComfyUI-aki-v1\output\AutoOutput`
-  - 默认每处理一张图等待 45 秒
-  - 节点标号修改
-    - 根据节点右上角标志确定编号；或者看工作流 json 文件
-    - 第一个是加载图像节点，第二个是保存图像节点
+### 核心功能
 
-### 脚本运行
-1. 默认处理 `D:\桌面中转\input` 内的图像
-2. 将一张或多张图像拖至该文件
+- **图像处理自动化**：支持多种 ComfyUI 工作流，一键处理图片
+- **长连接实时响应**：使用飞书 SDK WebSocket 长连接，实时接收和处理消息
+- **智能任务队列**：多用户并发处理，自动排队管理
+- **自然语言交互**：集成 DeepSeek AI，支持自然语言命令控制
+- **自动启动 ComfyUI**：检测并自动启动 ComfyUI 服务器
 
-## 脚本打包
-使用 `build_exe.py` 打包 `Comfyui单图处理.py` 与 `Qwen 单图编辑.json` 合成 `dist\Comfyui单图处理.exe`
-只需将待处理图像拖至该 exe 文件即可运行
+### 工作流支持
 
-## 功能说明
+| 工作流 | 命令 | 功能说明 |
+|--------|------|----------|
+| 面部重绘 | `/FaceFix` | 修复面部瑕疵，提升面部质量 |
+| 去除背景 | `/BackgroundRemove` | 自动去除图片背景杂物 |
+| 图像编辑 | `/Qwen_edit` | 根据文本提示词编辑图片 |
 
-### Comfyui单图处理.py
-- **工作流**：`Qwen 单图编辑.json`
-- **模型**：`qwen_image_edit_2511_fp8mixed`, `z_image_turbo_bf16`
-- **解释**：对图像先用 qwen 进行 remove，再用 ZIT 进行 fix
+### 图像编辑模式（两步式）
 
-### QwenRemove&fixV1.py
-- **工作流**：`Qwen_remove.json`, `remove_fix.json`
-- **模型**：`qwnImageEdit_v16Fp8Scaled`, `z_image_turbo_bf16`
-- **解释**：将所有图像 remove 完毕，再进行 fix
+1. 切换到 `/Qwen_edit` 模式
+2. 发送待编辑的图片
+3. 输入编辑提示词（如：`给人物加上墨镜`）
+4. 等待 AI 自动处理并返回结果
 
-### QwenRemove&fixV2.py
-- **工作流**：`Qwen_remove.json`, `remove_fix.json`
-- **模型**：`qwnImageEdit_v16Fp8Scaled`, `z_image_turbo_bf16`
-- **解释**：在 v1 的基础上会查询任务进度，等待上一个工作流执行完毕，再提交下一个任务
+## 快速开始
 
-### QwenRemoveV1.py
-- **工作流**：`Qwen_remove.json`
-- **模型**：`qwnImageEdit_v16Fp8Scaled`
-- **解释**：将所有图像 remove，不进行 fix
+### 环境要求
 
-### QwenRemoveV2.py
-- **工作流**：`Qwen_remove.json`
-- **模型**：`qwnImageEdit_v16Fp8Scaled`
-- **解释**：在 v1 的基础上会查询任务进度，等待上一个工作流执行完毕，再提交下一个任务
+- Python 3.8+
+- ComfyUI（AKI 版本或标准版）
+- 飞书企业自建应用
 
-### QwenRemoveParaV1.py
-- **工作流**：`Qwen_remove.json`
-- **模型**：`qwnImageEdit_v16Fp8Scaled`
-- **解释**：在 `QwenRemoveV2.py` 的基础上，改为参数调用形式
-- **使用方法**：`python QwenRemoveParaV1.py image.jpg`
+### 安装依赖
 
-### QwenRemoveParaV2.py
-- **工作流**：`Qwen_remove.json`, `remove_fix.json`
-- **模型**：`qwnImageEdit_v16Fp8Scaled`, `z_image_turbo_bf16`
-- **解释**：参数调用版本，支持 remove 和 fix 两个步骤
+```bash
+pip install lark-oapi requests deepseek
+```
 
-### QwenClassify&RemoveV1.py
-- **工作流**：`ImageClassify.json`, `Qwen_remove.json`, `boobs_fix.json`
-- **模型**：`qwnImageEdit_v16Fp8Scaled`, `moodyPornMix_zitV7.safetensors`
-- **解释**：先将图像分类，分为 boobs、normal。对于 boobs 图像执行 `boobs_fix.json`；对于 normal 图像执行 `Qwen_remove.json`
+### 配置说明
 
-### Video2Image4Remove.py
-- **功能**：将视频转换为图像帧，支持批量处理
-- **解释**：
-  - 重命名视频为 15 位随机 ID
-  - 调整分辨率为 720x1080
-  - 设置帧率为 16fps
-  - 保留音频
-  - 提取视频帧到输入文件夹
-- **使用方法**：将视频文件拖至脚本或运行 `python Video2Image4Remove.py video.mp4`
+编辑 `config.json5` 配置文件：
 
-### QwenRemoveV1ForEXE.py
-- **工作流**：`Qwen_remove.json`
-- **模型**：`qwnImageEdit_v16Fp8Scaled`
-- **解释**：用于打包成 exe 的版本，支持拖拽处理
+```json5
+{
+    // 飞书配置
+    "feishu": {
+        "app_id": "你的应用ID",
+        "app_secret": "你的应用密钥"
+    },
 
-### QwenRemoveV1ForSingle.py
-- **工作流**：`Qwen_remove.json`
-- **模型**：`qwnImageEdit_v16Fp8Scaled`
-- **解释**：单图处理版本，优化处理流程
+    // ComfyUI 配置
+    "comfyUI": {
+        "folder": "D:\\AI_Graph\\ConfyUI-aki\\ComfyUI-aki-v1",
+        "python_exe": "D:\\AI_Graph\\ConfyUI-aki\\ComfyUI-aki-v1\\python\\python.exe",
+        "main_py": "D:\\AI_Graph\\ConfyUI-aki\\ComfyUI-aki-v1\\main.py",
+        "host": "127.0.0.1",
+        "port": "8188"
+    },
 
-## Telegram Bot 脚本
+    // DeepSeek API（可选）
+    "deepseek": {
+        "api_key": "你的API密钥"
+    }
+}
+```
 
-### TeleBot.py
-- **功能**：Telegram 机器人基础版本
-- **解释**：分离 Telegram 机器人控制和工作流提交部分
-- **使用方法**：`python TeleBot.py`
-- **说明**：会调用对应的工作流文件，如 `QwenRemoveParaV1.py`
+### 启动机器人
 
-### QwenRemove_TeleBot.py
-- **功能**：集成 Telegram 机器人
-- **解释**：
-  - 在 `QwenRemoveV2.py` 的基础上，调用 Telegram 机器人
-  - 监听 `AUTHORIZED_USER_IDS` 列表内的 id 对应的用户消息
-  - 如果消息为图像，则执行 `QwenRemoveV2.py` 并返回结果
+**方式一：使用 bat 脚本**
+```bash
+FeiShuBotV8_启动.bat
+```
 
-### TeleBotComfyui.py
-- **功能**：Telegram 机器人完整版本
-- **解释**：集成工作流处理，支持多种图像处理模式
+**方式二：手动启动**
+```bash
+conda activate sam2Mask
+python FeiShuBotComfyuiV8_Refactored.py
+```
 
-### TeleBotComfyuiV2.py
-- **功能**：Telegram 机器人 V2 版本
-- **新功能**：
-  - 支持用户积分系统
-  - 支持密钥兑换
-  - 支持管理员权限
-  - 支持多工作流切换
-  - 支持任务队列管理
+### ComfyUI 自动启动
 
-### TeleBotComfyuiV2 copy.py
-- **说明**：TeleBotComfyuiV2.py 的备份副本
+如果 ComfyUI 服务器未运行，机器人会自动检测并尝试启动：
+- 自动在新终端窗口启动 ComfyUI
+- 最多等待 150 秒等待启动完成
+- 程序退出时自动停止 ComfyUI（仅限自动启动的进程）
 
-### TeleBotComfyuiV3.py
-- **功能**：Telegram 机器人 V3 版本
-- **新功能**：
-  - 集成 DeepSeek AI 助手，支持自然语言对话
-  - 支持文生图功能
-  - 支持图像编辑功能
-  - 支持批量图片处理（3秒内收集多张图片后统一处理）
-  - 支持任务查询命令 `/task`
-  - 改进的用户界面和提示信息
-  - 多种工作流模式：面部重绘、去除背景杂物、服装移除、胸部重绘、图像编辑
-- **使用方法**：`python TeleBotComfyuiV3.py`
+## 使用指南
 
-## 飞书 Bot 脚本
+### 基础命令
 
-### FeiShuBotComfyuiV7_Final.py
-- **功能**：飞书机器人 V7 最终版本
-- **新功能**：
-  - 基于飞书 SDK WebSocket Client 实现长连接监听事件
-  - 集成 ComfyUI 图像处理功能
-  - 支持用户积分系统
-  - 支持密钥兑换功能
-  - 支持多工作流切换（5种模式）
-  - 支持任务队列管理
-  - 支持自然语言对话（集成 DeepSeek AI）
-  - 支持文生图功能
-  - 支持消息去重机制
-- **工作流模式**：
-  - FaceFix（面部重绘）- 1积分/张
-  - BackgroundRemove（去除背景杂物）- 2积分/张
-  - Qwen_remove（服装移除）- 2积分/张
-  - BoobsFix（胸部重绘）- 1积分/张
-  - Qwen_edit（图像编辑）- 2积分/张
-- **使用方法**：
-  - 运行：`python FeiShuBotComfyuiV7_Final.py` 或双击 `FeiShuBotV7_Final_启动.bat`
-  - 启动后发送 `/start` 查看帮助信息
-  - 发送图片进行处理
-  - 使用自然语言生成图片（如：帮我生成一张美女图）
+| 命令 | 功能 |
+|------|------|
+| `/start` | 启动机器人，显示欢迎消息 |
+| `/help` | 显示详细帮助信息 |
+| `/queue` | 查看当前任务队列状态 |
+| `/status` | 查看任务队列状态（同 /queue） |
+| `/cancel` | 取消当前正在进行的编辑任务 |
 
-### FeiShuBotComfyuiV8_Refactored.py
-- **功能**：飞书机器人 V8 重构版本
-- **新功能**：
-  - 完全重构的模块化架构
-  - 统一的消息去重管理器
-  - 结构化的任务队列系统
-  - 清晰的错误处理机制
-  - 配置管理优化
-  - 图像编辑模式优化（先接收图片，再询问编辑提示词）
-- **模块结构**：
-  - ConfigManager：配置文件管理
-  - MessageDeduplicator：消息去重
-  - TaskQueue：任务队列管理
-  - ComfyUIWorkflow：工作流处理
-  - ImageProcessor：图像处理
-  - FeishuAPI：飞书API交互
-  - FeishuMessenger：飞书消息发送
-  - NLProcessor：自然语言处理
-  - MessageHandler：消息处理
-- **使用方法**：
-  - 运行：`python FeiShuBotComfyuiV8_Refactored.py` 或双击 `FeiShuBotV8_启动.bat`
-  - 支持与 V7 版本相同的功能
-  - 代码结构更清晰，易于维护和扩展
+### 工作流切换
 
-### 飞书机器人使用指南
-- **配置文件**：`config.json5`
-  - 飞书应用配置（app_id、app_secret）
-  - ComfyUI 服务器配置
-  - 工作流配置（节点ID、文件名、积分消耗）
-  - DeepSeek API 配置
-  - 积分系统配置
+**方式一：使用命令**
+```
+/FaceFix          # 切换到面部重绘
+/BackgroundRemove # 切换到去除背景
+/Qwen_edit        # 切换到图像编辑
+```
 
-- **基础命令**：
-  - `/start` - 启动机器人
-  - `/help` - 查看帮助
-  - `/queue` 或 `/status` - 查看任务队列状态
-  - `/FaceFix` - 切换到面部重绘模式
-  - `/BackgroundRemove` - 切换到去除背景杂物模式
-  - `/Qwen_remove` - 切换到服装移除模式
-  - `/BoobsFix` - 切换到胸部重绘模式
-  - `/Qwen_edit` - 切换到图像编辑模式
+**方式二：自然语言切换**
+```
+"切换到面部重绘"
+"改成去除背景"
+```
 
-- **自然语言功能**：
-  - 切换工作流：如"切换到面部重绘"、"改成去除背景"
-  - 文生图：如"帮我生成一张美女图"、"画一个风景"
-  - 对话交互：支持普通对话
+### 文生图功能
 
-- **图像编辑模式流程**：
-  1. 切换到图像编辑模式（`/Qwen_edit`）
-  2. 发送待编辑的图片
-  3. 输入编辑提示词（如："给人物加上墨镜"）
-  4. 等待处理结果
+直接发送描述即可生成图片：
+```
+帮我生成一张美女图
+画一个风景
+创建一个动漫角色
+生成一张中国网红图
+```
 
-- **任务队列系统**：
-  - 支持多张图片批量处理
-  - 自动分配任务序号
-  - 实时显示队列位置和等待任务数
-  - 处理完成后自动返回结果
+## 项目架构
 
-## 工具脚本
+```
+FeiShuBotComfyuiV8_Refactored.py
+├── 配置管理模块 (ConfigManager)
+├── 消息去重管理器 (MessageDeduplicator)
+├── 任务队列管理 (TaskQueue)
+├── ComfyUI 工作流处理器 (ComfyUIWorkflow)
+├── 图像处理器 (ImageProcessor)
+├── 飞书 API 交互 (FeishuAPI)
+├── 消息发送器 (FeishuMessenger)
+├── 自然语言处理器 (NLProcessor - DeepSeek)
+└── 主消息处理器 (MessageHandler)
+```
 
-### build_exe.py
-- **功能**：将 Python 脚本打包为 exe 文件
-- **使用方法**：`python build_exe.py`
-- **说明**：使用 PyInstaller 打包，需要提前安装 `pyinstaller`
+### 核心模块
 
-### generate_keys.py
-- **功能**：生成用户密钥
-- **输出**：生成 10 个 16 位密钥，格式为 JSON
-- **使用方法**：`python generate_keys.py`
+- **MessageDeduplicator**：防止重复处理同一条消息
+- **TaskQueue**：管理多用户任务队列，支持查看排队位置
+- **ComfyUIWorkflow**：封装工作流加载和参数设置
+- **ImageProcessor**：统一处理各种图像操作
+- **MessageHandler**：核心消息处理逻辑，支持命令和自然语言
 
-## 相关链接
+## 文件说明
+
+| 文件 | 说明 |
+|------|------|
+| `FeiShuBotComfyuiV8_Refactored.py` | 飞书机器人主程序（V8 重构版） |
+| `TeleBotComfyuiV3.py` | Telegram 机器人版本 |
+| `config.json5` | 配置文件（含敏感信息，请勿上传） |
+| `*.json` | ComfyUI 工作流文件 |
+
+## 工作流配置
+
+工作流配置在 `config.json5` 中：
+
+```json5
+"workflows": {
+    "FaceFix": {
+        "seed_id": 9,
+        "input_image_id": 27,
+        "output_image_id": 72,
+        "workflow": "FaceFix.json",
+        "points_cost": 1
+    },
+    "Qwen_edit": {
+        "seed_id": 65,
+        "input_image_id": 41,
+        "output_image_id": 181,
+        "workflow": "Qwen_edit.json",
+        "prompt_node_id": 68,
+        "points_cost": 2
+    }
+}
+```
+
+- `seed_id`：随机种子节点 ID
+- `input_image_id`：输入图像节点 ID
+- `output_image_id`：输出图像节点 ID
+- `prompt_node_id`：提示词节点 ID（仅图像编辑需要）
+- `points_cost`：积分消耗
+
+## 注意事项
+
+1. **配置文件安全**：`config.json5` 包含敏感信息，已加入 `.gitignore`
+2. **ComfyUI 端口**：确保 ComfyUI 运行在配置的端口（默认 8188）
+3. **飞书应用配置**：需要在飞书开放平台开启「使用长连接接收事件」
+4. **API 配额**：注意 DeepSeek API 的调用配额限制
+
+## License
+
+MIT License
