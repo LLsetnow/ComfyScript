@@ -2481,3 +2481,6 @@ OpenClaw
 2026-04-17 00:02:57 [INFO] 解析后的消息: <lark_oapi.api.im.v1.model.event_message.EventMessage object at 0x00000157EEACF6A0>
 2026-04-17 00:02:57 [INFO] chat_id=oc_b48e5c2239325fdba6ff8860e5bf6bda, content={"text":"最新的美伊冲突有什么新闻"}, message_id=om_x100b51242032fca4b20f81ff51a9398, message_type=text
 2026-04-17 00:02:57 [INFO] [跳过] 消息已处理过: om_x100b51242032fca4b20f81ff51a9398
+2026-04-17 00:26:02 [INFO] 
+
+收到停止信号，正在停止机器人...

@@ -26,17 +26,20 @@ class _ComfyUIContext:
         self.comfyui_client = None
         self.image_processor = None
         self.pending_image_path = None  # 待编辑的图片路径
+        self.sender_id = None  # 消息发送者的 open_id
 
-    def set(self, feishu_client=None, chat_id=None, comfyui_client=None, image_processor=None):
+    def set(self, feishu_client=None, chat_id=None, comfyui_client=None, image_processor=None, sender_id=None):
         self.feishu_client = feishu_client
         self.chat_id = chat_id
         self.comfyui_client = comfyui_client
         self.image_processor = image_processor
+        self.sender_id = sender_id
 
     def clear(self):
         self.feishu_client = None
         self.chat_id = None
         self.pending_image_path = None
+        self.sender_id = None
 
 comfyui_context = _ComfyUIContext()
 
@@ -781,9 +784,12 @@ def comfyui_text_to_image(prompt: str) -> str:
         return f"文生图错误: {str(e)}"
 
 
-def comfyui_check_server() -> str:
+def comfyui_check_server(dummy: str = "") -> str:
     """
-    检查 ComfyUI 服务器是否正在运行。
+    检查 ComfyUI 服务器是否正在运行。无需输入参数。
+
+    Args:
+        dummy: 忽略此参数（兼容工具调用格式）
 
     Returns:
         服务器状态描述
@@ -795,12 +801,38 @@ def comfyui_check_server() -> str:
         return "ComfyUI 客户端未初始化。"
 
     try:
+        # 先检查当前地址
         if ctx.comfyui_client.check_server(max_attempts=2, check_delay=2):
             return "ComfyUI 服务器正在运行中，可以执行图像生成任务。"
-        else:
-            return "ComfyUI 服务器未运行。如需生成图片，请先启动 ComfyUI 服务器。"
+
+        # 内网不通，尝试通过 ngrok 公网地址连接
+        logger.info("当前地址不可达，尝试通过 ngrok 公网地址连接...")
+        public_url = _get_ngrok_url()
+        if public_url and public_url != ctx.comfyui_client.api_url:
+            ctx.comfyui_client.api_url = public_url
+            logger.info(f"切换到公网地址: {public_url}")
+            if ctx.comfyui_client.check_server(max_attempts=2, check_delay=2):
+                return f"ComfyUI 服务器正在运行中（公网地址），可以执行图像生成任务。"
+
+        return "ComfyUI 服务器未运行。如需生成图片，请先启动 ComfyUI 服务器。"
     except Exception as e:
         return f"检查 ComfyUI 服务器状态时出错: {str(e)}"
+
+
+def _get_ngrok_url() -> str:
+    """通过 ngrok 本地 API 获取公网地址"""
+    try:
+        import urllib.request
+        import json as _json
+        with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=3) as resp:
+            data = _json.loads(resp.read().decode())
+            for tunnel in data.get("tunnels", []):
+                url = tunnel.get("public_url", "")
+                if url.startswith("https://"):
+                    return url
+    except Exception:
+        pass
+    return ""
 
 
 def comfyui_edit_image(prompt: str) -> str:
@@ -869,6 +901,344 @@ def comfyui_edit_image(prompt: str) -> str:
         import traceback
         logger.error(traceback.format_exc())
         return f"图像编辑错误: {str(e)}"
+
+
+def feishu_create_doc(input_str: str) -> str:
+    """
+    创建飞书云文档。当用户要求创建文档、记录笔记、撰写报告等场景时使用此工具。
+
+    Args:
+        input_str: 输入格式为"标题|正文内容"（标题和正文用|分隔，正文可选）。
+                   例如："会议纪要|今天讨论了项目进度" 或 "学习笔记"
+
+    Returns:
+        操作结果描述，包含文档链接
+    """
+    # 解析输入：标题|正文
+    parts = input_str.split("|", 1)
+    title = parts[0].strip()
+    content = parts[1].strip() if len(parts) > 1 else ""
+
+    if not title:
+        return "错误: 文档标题不能为空。"
+    logger.info(f"📝 正在创建飞书云文档: {title}")
+
+    ctx = comfyui_context
+    if not ctx.feishu_client:
+        return "错误: 飞书客户端未初始化，无法创建文档。"
+
+    try:
+        import lark_oapi as lark
+        from lark_oapi.api.docx.v1 import CreateDocumentRequest, CreateDocumentRequestBody
+
+        client = ctx.feishu_client._client
+        if not client:
+            return "错误: 飞书SDK客户端未初始化。"
+
+        # 构建文档内容块
+        content_blocks = []
+        if content:
+            # 将内容按段落分割，每段作为一个文本块
+            paragraphs = content.split('\n')
+            for para in paragraphs:
+                text = para.strip()
+                if text:
+                    content_blocks.append({
+                        "block_type": 2,  # 文本块
+                        "text": {
+                            "elements": [{
+                                "text_run": {
+                                    "content": text,
+                                    "text_element_style": {}
+                                }
+                            }],
+                            "style": {}
+                        }
+                    })
+
+        # 创建文档请求
+        req_body = CreateDocumentRequestBody.builder() \
+            .title(title) \
+            .build()
+
+        request = CreateDocumentRequest.builder() \
+            .request_body(req_body) \
+            .build()
+
+        response = client.docx.v1.document.create(request)
+
+        if response.code != 0:
+            logger.error(f"创建文档失败: code={response.code}, msg={response.msg}")
+            # 回退到使用 REST API 方式
+            return _feishu_create_doc_rest(title, content)
+
+        doc_id = response.data.document.document_id
+        doc_url = f"https://bytedance.larkoffice.com/docx/{doc_id}"
+
+        logger.info(f"✅ 文档创建成功: {doc_url}")
+
+        # 如果有内容，追加到文档中（使用 REST API，避免 SDK 版本兼容问题）
+        if content_blocks:
+            token = ctx.feishu_client._get_tenant_access_token()
+            if token:
+                _append_doc_blocks_rest(token, ctx.feishu_client.api_base, doc_id, content)
+
+        # 转移文档所有者给用户
+        _transfer_doc_owner(ctx, doc_id)
+
+        return f"文档创建成功！标题: {title}\n链接: {doc_url}\n请立即使用Finish结束。"
+
+    except Exception as e:
+        logger.error(f"创建飞书文档异常: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        # 回退到 REST API 方式
+        return _feishu_create_doc_rest(title, content)
+
+
+def _feishu_create_doc_rest(title: str, content: str = "") -> str:
+    """使用 REST API 创建飞书云文档（回退方案）"""
+    ctx = comfyui_context
+    try:
+        token = ctx.feishu_client._get_tenant_access_token()
+        if not token:
+            return "错误: 无法获取飞书访问令牌。"
+
+        api_base = ctx.feishu_client.api_base
+        import requests
+
+        # 创建文档
+        create_url = f"{api_base}/docx/v1/documents"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        body = {"title": title}
+
+        resp = requests.post(create_url, headers=headers, json=body, timeout=15)
+        result = resp.json()
+
+        if result.get("code") != 0:
+            return f"错误: 创建文档失败 - {result.get('msg', '未知错误')}"
+
+        doc_id = result.get("data", {}).get("document", {}).get("document_id", "")
+        if not doc_id:
+            return "错误: 创建文档成功但未获取到文档ID。"
+
+        doc_url = f"https://bytedance.larkoffice.com/docx/{doc_id}"
+        logger.info(f"✅ 文档创建成功(REST): {doc_url}")
+
+        # 如果有内容，追加到文档
+        if content:
+            _append_doc_blocks_rest(token, api_base, doc_id, content)
+
+        # 转移文档所有者给用户
+        _transfer_doc_owner(ctx, doc_id)
+
+        return f"文档创建成功！标题: {title}\n链接: {doc_url}\n请立即使用Finish结束。"
+
+    except Exception as e:
+        logger.error(f"REST API创建文档异常: {e}")
+        return f"创建文档错误: {str(e)}"
+
+
+def _append_doc_blocks_rest(token: str, api_base: str, doc_id: str, content: str):
+    """使用 REST API 向文档追加内容"""
+    try:
+        import requests
+        url = f"{api_base}/docx/v1/documents/{doc_id}/blocks/{doc_id}/children"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        children = []
+        for para in content.split('\n'):
+            text = para.strip()
+            if text:
+                children.append({
+                    "block_type": 2,
+                    "text": {
+                        "elements": [{
+                            "text_run": {
+                                "content": text,
+                                "text_element_style": {}
+                            }
+                        }],
+                        "style": {}
+                    }
+                })
+
+        if children:
+            body = {"children": children}
+            resp = requests.post(url, headers=headers, json=body, timeout=15)
+            result = resp.json()
+            if result.get("code") != 0:
+                logger.warning(f"REST追加文档内容失败: {result.get('msg')}")
+    except Exception as e:
+        logger.warning(f"REST追加文档内容异常: {e}")
+
+
+def _transfer_doc_owner(ctx, doc_id: str):
+    """将文档所有者从机器人转移给消息发送者"""
+    if not ctx.sender_id:
+        logger.info("无法转移文档所有者: 未获取到发送者ID")
+        return
+
+    try:
+        token = ctx.feishu_client._get_tenant_access_token()
+        if not token:
+            logger.warning("转移文档所有者失败: 无法获取访问令牌")
+            return
+
+        import requests
+        from urllib.parse import quote
+        api_base = ctx.feishu_client.api_base
+
+        # 先将用户添加为文档协作者（full_access权限），因为转移所有者要求目标用户是协作者
+        add_member_url = f"{api_base}/drive/v1/permissions/{doc_id}/members?type=docx"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        add_body = {
+            "member_type": "openid",
+            "member_id": ctx.sender_id,
+            "perm": "full_access"
+        }
+
+        resp = requests.post(add_member_url, headers=headers, json=add_body, timeout=15)
+        try:
+            result = resp.json()
+        except Exception:
+            logger.warning(f"添加文档协作者返回非JSON: {resp.text[:200]}")
+            return
+        if result.get("code") != 0:
+            logger.warning(f"添加文档协作者失败: code={result.get('code')}, msg={result.get('msg')}")
+            return
+
+        logger.info(f"已将用户 {ctx.sender_id} 添加为文档协作者")
+
+        # 转移所有者
+        encoded_sender_id = quote(ctx.sender_id, safe='')
+        transfer_url = f"{api_base}/drive/v1/permissions/{doc_id}/members/{encoded_sender_id}/transfer_owner?type=docx"
+        transfer_body = {
+            "member_type": "openid"
+        }
+
+        resp = requests.post(transfer_url, headers=headers, json=transfer_body, timeout=15)
+        try:
+            result = resp.json()
+        except Exception:
+            logger.warning(f"转移文档所有者返回非JSON: {resp.text[:200]}")
+            return
+        if result.get("code") != 0:
+            logger.warning(f"转移文档所有者失败: code={result.get('code')}, msg={result.get('msg')}")
+        else:
+            logger.info(f"✅ 文档所有者已转移给用户 {ctx.sender_id}")
+
+    except Exception as e:
+        logger.warning(f"转移文档所有者异常: {e}")
+
+
+def feishu_write_doc(input_str: str) -> str:
+    """
+    向飞书云文档中写入/追加内容。当用户要求往某个文档中写入内容、补充笔记、添加段落等场景时使用此工具。
+
+    Args:
+        input_str: 输入格式为"文档链接|要写入的内容"或"文档ID|要写入的内容"。
+                   文档链接如 https://bytedance.larkoffice.com/docx/XXXXXX，
+                   也可以直接提供文档ID（XXXXXX部分）。
+
+    Returns:
+        操作结果描述
+    """
+    # 解析输入：文档ID或链接|内容
+    parts = input_str.split("|", 1)
+    if len(parts) < 2:
+        return "错误: 输入格式应为\"文档链接|要写入的内容\"或\"文档ID|要写入的内容\"。"
+
+    doc_ref = parts[0].strip()
+    content = parts[1].strip()
+
+    if not doc_ref or not content:
+        return "错误: 文档标识和写入内容均不能为空。"
+
+    # 从链接中提取文档ID
+    doc_id = _extract_doc_id(doc_ref)
+
+    logger.info(f"📝 正在向文档 {doc_id} 写入内容: {content[:50]}...")
+
+    ctx = comfyui_context
+    if not ctx.feishu_client:
+        return "错误: 飞书客户端未初始化，无法写入文档。"
+
+    # 直接使用 REST API（避免 SDK 版本兼容问题）
+    return _feishu_write_doc_rest(doc_id, content)
+
+
+def _feishu_write_doc_rest(doc_id: str, content: str) -> str:
+    """使用 REST API 向文档写入内容（回退方案）"""
+    ctx = comfyui_context
+    try:
+        token = ctx.feishu_client._get_tenant_access_token()
+        if not token:
+            return "错误: 无法获取飞书访问令牌。"
+
+        api_base = ctx.feishu_client.api_base
+        import requests
+
+        url = f"{api_base}/docx/v1/documents/{doc_id}/blocks/{doc_id}/children"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        blocks = _build_text_blocks(content)
+        body = {"children": blocks}
+
+        resp = requests.post(url, headers=headers, json=body, timeout=15)
+        result = resp.json()
+
+        if result.get("code") != 0:
+            return f"错误: 写入文档失败 - {result.get('msg', '未知错误')}"
+
+        logger.info(f"✅ 内容已写入文档(REST): {doc_id}")
+
+        return f"内容写入成功！已将内容追加到文档 {doc_id} 中。请立即使用Finish结束。"
+
+    except Exception as e:
+        logger.error(f"REST API写入文档异常: {e}")
+        return f"写入文档错误: {str(e)}"
+
+
+def _extract_doc_id(doc_ref: str) -> str:
+    """从文档链接或ID中提取文档ID"""
+    # 如果是完整链接，提取最后一段
+    if "/" in doc_ref:
+        return doc_ref.rstrip("/").split("/")[-1]
+    return doc_ref
+
+
+def _build_text_blocks(content: str) -> list:
+    """将文本内容构建为飞书文档内容块列表"""
+    blocks = []
+    for para in content.split('\n'):
+        text = para.strip()
+        if text:
+            blocks.append({
+                "block_type": 2,  # 文本块
+                "text": {
+                    "elements": [{
+                        "text_run": {
+                            "content": text,
+                            "text_element_style": {}
+                        }
+                    }],
+                    "style": {}
+                }
+            })
+    return blocks
 
 # --- 工具初始化与使用示例 ---
 if __name__ == '__main__':
