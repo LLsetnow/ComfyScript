@@ -3,6 +3,8 @@ import json
 import re
 import ast
 import operator
+import logging
+from datetime import datetime, timezone, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
 from typing import List, Dict, Any
@@ -10,6 +12,9 @@ import requests
 
 # 加载 .env 文件中的环境变量
 load_dotenv()
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # ReAct 提示词模板（基础版 - Zero-Shot）
@@ -19,6 +24,11 @@ REACT_PROMPT_TEMPLATE = """
 
 可用工具如下:
 {tools}
+
+重要规则：
+- 搜索类问题（如时事、新闻、最新产品等），搜索后应立即基于搜索结果回答，不要反复搜索
+- 计算类问题，调用计算器后应立即给出结果
+- 不要在获得搜索结果后继续搜索相同或相似的问题
 
 请严格按照以下格式进行回应:
 
@@ -56,7 +66,7 @@ class HelloAgentsLLM:
         """
         调用大语言模型进行思考，并返回其响应。
         """
-        print(f"🧠 正在调用 {self.model} 模型...")
+        logger.info(f"🧠 正在调用 {self.model} 模型...")
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -66,17 +76,17 @@ class HelloAgentsLLM:
             )
             
             # 处理流式响应
-            print("✅ 大语言模型响应成功:")
+            logger.info("✅ 大语言模型响应成功:")
             collected_content = []
             for chunk in response:
                 content = chunk.choices[0].delta.content or ""
-                print(content, end="", flush=True)
+                print(content, end="", flush=True)  # 流式输出直接打印
                 collected_content.append(content)
             print()  # 在流式输出结束后换行
             return "".join(collected_content)
 
         except Exception as e:
-            print(f"❌ 调用LLM API时发生错误: {e}")
+            logger.error(f"❌ 调用LLM API时发生错误: {e}")
             return None
 
 class ToolExecutor:
@@ -92,9 +102,9 @@ class ToolExecutor:
         向工具箱中注册一个新工具。
         """
         if name in self.tools:
-            print(f"警告:工具 '{name}' 已存在，将被覆盖。")
+            logger.warning(f"工具 '{name}' 已存在，将被覆盖。")
         self.tools[name] = {"description": description, "func": func}
-        print(f"工具 '{name}' 已注册。")
+        logger.info(f"工具 '{name}' 已注册。")
 
     def getTool(self, name: str) -> callable:
         """
@@ -248,7 +258,7 @@ class ReActAgent:
 
         while current_step < self.max_steps:
             current_step += 1
-            print(f"--- 第 {current_step} 步 ---")
+            logger.info(f"--- 第 {current_step} 步 ---")
 
             # 1. 格式化提示词
             tools_desc = self.tool_executor.getAvailableTools()
@@ -276,17 +286,17 @@ class ReActAgent:
             response_text = self.llm_client.think(messages=messages)
 
             if not response_text:
-                print("错误:LLM未能返回有效响应。")
+                logger.error("错误:LLM未能返回有效响应。")
                 break
 
             # 3. 解析LLM的输出
             thought, action = self._parse_output(response_text)
 
             if thought:
-                print(f"🤔 思考: {thought}")
+                logger.info(f"🤔 思考: {thought}")
 
             if not action:
-                print("警告:未能解析出有效的Action，流程终止。")
+                logger.warning("警告:未能解析出有效的Action，流程终止。")
                 self.error_manager.record_failure(
                     ErrorRecoveryManager.ERROR_PARSE_FAILED,
                     details="无法解析Action"
@@ -296,22 +306,22 @@ class ReActAgent:
             # 4. 执行Action
             if action.startswith("Finish"):
                 # 如果是Finish指令，提取最终答案并结束
-                finish_match = re.match(r"Finish\[(.*)\]", action)
+                finish_match = re.match(r"Finish\[(.*)\]", action, re.DOTALL)
                 if finish_match:
                     final_answer = finish_match.group(1)
-                    print(f"🎉 最终答案: {final_answer}")
+                    logger.info(f"🎉 最终答案: {final_answer}")
                     self.error_manager.record_success()  # 成功，reset失败计数
                     return final_answer
                 else:
-                    print(f"⚠️  警告:无法解析Finish指令: {action}")
+                    logger.warning(f"⚠️  警告:无法解析Finish指令: {action}")
                     return f"无法解析的Finish指令: {action}"
 
             tool_name, tool_input = self._parse_action(action)
-            if not tool_name or not tool_input:
-                observation = f"错误:无法解析Action格式 '{action}'。请使用格式: 工具名[输入内容]"
+            if not tool_name:
+                observation = f"错误:无法解析Action格式 '{action}'。请使用格式: 工具名[输入内容]，无参数时格式为: 工具名[]"
                 self.history.append(f"Action: {action}")
                 self.history.append(f"Observation: {observation}")
-                print(f"👀 观察: {observation}")
+                logger.info(f"👀 观察: {observation}")
 
                 # 记录解析失败
                 self.error_manager.record_failure(
@@ -320,13 +330,13 @@ class ReActAgent:
                 )
                 continue
 
-            print(f"🎬 行动: {tool_name}[{tool_input}]")
+            logger.info(f"🎬 行动: {tool_name}[{tool_input}]")
 
             # 5. 执行工具并处理错误
             tool_function = self.tool_executor.getTool(tool_name)
             if not tool_function:
                 observation = f"错误:未找到名为 '{tool_name}' 的工具。可用工具: {', '.join(self.tool_executor.listToolNames())}"
-                print(f"👀 观察: {observation}")
+                logger.info(f"👀 观察: {observation}")
 
                 # 记录工具不存在错误
                 self.error_manager.record_failure(
@@ -337,7 +347,7 @@ class ReActAgent:
             else:
                 try:
                     observation = tool_function(tool_input)
-                    print(f"👀 观察: {observation}")
+                    logger.info(f"👀 观察: {observation}")
 
                     # 检查工具返回的错误信息
                     if observation and observation.startswith("错误:"):
@@ -352,7 +362,7 @@ class ReActAgent:
 
                 except Exception as e:
                     observation = f"工具执行异常: {str(e)}"
-                    print(f"👀 观察: {observation}")
+                    logger.info(f"👀 观察: {observation}")
                     self.error_manager.record_failure(
                         ErrorRecoveryManager.ERROR_SAME_TOOL_WRONG,
                         tool_name=tool_name,
@@ -365,22 +375,27 @@ class ReActAgent:
 
             # 检查是否触发强制 Finish 机制
             if (self.error_manager.consecutive_failures >= self.error_manager.max_consecutive_failures):
-                print("\n" + "="*50)
-                print(f"⚠️ 检测到连续 {self.error_manager.consecutive_failures} 次工具调用失败")
-                print("系统将根据历史观察记录生成答案...")
-                print("="*50)
+                logger.warning("\n" + "="*50)
+                logger.warning(f"⚠️ 检测到连续 {self.error_manager.consecutive_failures} 次工具调用失败")
+                logger.warning("系统将根据历史观察记录生成答案...")
+                logger.warning("="*50)
 
                 # 从历史记录中提取最后的有效观察结果
                 final_answer = self._extract_answer_from_history()
                 if final_answer:
-                    print(f"🎉 系统自动Finish: {final_answer}")
+                    logger.info(f"🎉 系统自动Finish: {final_answer}")
                     return final_answer
                 else:
                     # 没有有效信息，返回无法回答
-                    print(f"🎉 系统自动Finish: 由于工具多次失败，无法获取有效答案")
+                    logger.warning(f"🎉 系统自动Finish: 由于工具多次失败，无法获取有效答案")
                     return "由于工具多次失败，无法获取有效答案，请人工介入处理。"
 
-        print("已达到最大步数，流程终止。")
+        logger.warning("已达到最大步数，流程终止。")
+        # 尝试从历史记录中提取答案，而不是直接返回 None
+        final_answer = self._extract_answer_from_history()
+        if final_answer:
+            logger.info(f"🎉 达到最大步数，从历史中提取答案: {final_answer[:100]}")
+            return final_answer
         return None
 
     def _parse_output(self, text: str):
@@ -389,7 +404,7 @@ class ReActAgent:
         # Thought: 匹配到 Action: 或文本末尾
         thought_match = re.search(r"Thought:\s*(.*?)(?=\nAction:|$)", text, re.DOTALL)
         # Action: 匹配到文本末尾
-        action_match = re.search(r"Action:\s*(.*?)$", text, re.DOTALL)
+        action_match = re.search(r"Action:\s*(.*)", text, re.DOTALL)
         thought = thought_match.group(1).strip() if thought_match else None
         action = action_match.group(1).strip() if action_match else None
         return thought, action
@@ -435,7 +450,7 @@ def search(query: str) -> str:
     一个基于博查API的实战网页搜索引擎工具。
     它会智能地解析搜索结果，优先返回直接答案或知识图谱信息。
     """
-    print(f"🔍 正在执行 [博查API] 网页搜索: {query}")
+    logger.info(f"🔍 正在执行 [博查API] 网页搜索: {query}")
     try:
         # 从环境变量获取博查API配置
         api_endpoint = os.getenv("BOC_SEARCH_API_URL", "https://api.bochaai.com/v1/web-search")
@@ -456,7 +471,7 @@ def search(query: str) -> str:
             "count": 10
         }
         
-        print(f"🌐 连接博查API: {api_endpoint}")
+        logger.info(f"🌐 连接博查API: {api_endpoint}")
         response = requests.post(
             api_endpoint,
             headers=headers,
@@ -627,7 +642,7 @@ def calculate(expression: str) -> str:
     - 输入: "(123 + 456) * 789 / 12"
     - 输出: "计算结果: 37957.5"
     """
-    print(f"🧮 正在执行数学计算: {expression}")
+    logger.info(f"🧮 正在执行数学计算: {expression}")
     try:
         result = SafeCalculator.calculate(expression)
         # 格式化输出
@@ -644,6 +659,42 @@ def calculate(expression: str) -> str:
     except Exception as e:
         return f"未知错误: {str(e)}"
 
+
+def get_current_time(timezone_offset: str = "") -> str:
+    """
+    获取当前日期和时间工具。
+    当需要知道当前时间、日期，或需要判断信息的时效性时，应使用此工具。
+    
+    Args:
+        timezone_offset: 可选，时区偏移，如 "+8" 表示东八区(北京时间)。默认为东八区。
+    
+    Returns:
+        当前日期和时间的格式化字符串
+    """
+    logger.info(f"🕐 正在获取当前时间, 时区偏移: {timezone_offset or '+8(默认)'}")
+    try:
+        # 解析时区偏移
+        if timezone_offset:
+            offset_hours = int(timezone_offset.replace("+", "").replace("UTC", "").replace("utc", ""))
+        else:
+            offset_hours = 8  # 默认东八区(北京时间)
+        
+        tz = timezone(timedelta(hours=offset_hours))
+        now = datetime.now(tz)
+        
+        # 格式化输出
+        weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+        weekday = weekday_names[now.weekday()]
+        
+        result = (
+            f"当前时间: {now.strftime('%Y年%m月%d日')} {weekday} "
+            f"{now.strftime('%H时%M分%S秒')} "
+            f"(UTC{'+' if offset_hours >= 0 else ''}{offset_hours})"
+        )
+        return result
+    except Exception as e:
+        return f"获取时间错误: {str(e)}"
+
 # --- 工具初始化与使用示例 ---
 if __name__ == '__main__':
     # 1. 初始化工具执行器
@@ -658,6 +709,6 @@ if __name__ == '__main__':
     toolExecutor.registerTool("Calculator", calc_description, calculate)
     
     # 3. 打印可用的工具
-    print("\n--- 可用的工具 ---")
-    print(toolExecutor.getAvailableTools())
+    logger.info("\n--- 可用的工具 ---")
+    logger.info(toolExecutor.getAvailableTools())
     
