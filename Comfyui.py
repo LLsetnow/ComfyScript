@@ -162,7 +162,7 @@ class ComfyUIWorkflow:
     def load_workflow(self) -> bool:
         """加载工作流 JSON 文件"""
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        workflow_path = os.path.join(script_dir, self.workflow_file)
+        workflow_path = os.path.join(script_dir, "workflows", self.workflow_file)
         
         if not os.path.exists(workflow_path):
             raise FileNotFoundError(f"找不到工作流文件: {workflow_path}")

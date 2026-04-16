@@ -1,0 +1,80 @@
+{
+    // 代理配置
+    // use_proxy: 设置为 false 禁用代理
+    // http/https: 代理服务器地址
+    "proxy": {
+        "use_proxy": true,
+        "http": "http://127.0.0.1:7897",
+        "https": "http://127.0.0.1:7897"
+    },
+
+    // ComfyUI 配置
+    // folder: ComfyUI 安装目录
+    // python_exe: Python 可执行文件路径
+    // main_py: main.py 文件路径
+    // host/port/timeout: ComfyUI 服务器配置
+    "comfyUI": {
+        "folder": "D:\\AI_Graph\\ConfyUI-aki\\ComfyUI-aki-v1",
+        "python_exe": "D:\\AI_Graph\\ConfyUI-aki\\ComfyUI-aki-v1\\python\\python.exe",
+        "main_py": "D:\\AI_Graph\\ConfyUI-aki\\ComfyUI-aki-v1\\main.py",
+        "host": "127.0.0.1",
+        "port": "8188",
+        "timeout": 300
+    },
+
+    // 工作流配置
+    // seed_id: 种子节点ID
+    // input_image_id: 输入图像节点ID
+    // output_image_id: 输出图像节点ID
+    // workflow: 工作流JSON文件名
+    // remove_iterations: 处理迭代次数
+    // points_cost: 每张图片消耗的积分
+    // prompt_node_id: 提示词节点ID(仅图像编辑需要)
+    "workflows": {
+        "FaceFix": {
+            "seed_id": 9,
+            "input_image_id": 27,
+            "output_image_id": 72,
+            "workflow": "FaceFix.json",
+            "remove_iterations": 1,
+            "points_cost": 1
+        },
+        "BackgroundRemove": {
+            "seed_id": 65,
+            "input_image_id": 41,
+            "output_image_id": 224,
+            "workflow": "BackgroundRemove.json",
+            "remove_iterations": 1,
+            "points_cost": 2
+        },
+        "Qwen_edit": {
+            "seed_id": 65,
+            "input_image_id": 41,
+            "output_image_id": 181,
+            "workflow": "Qwen_edit.json",
+            "prompt_node_id": 68,
+            "remove_iterations": 1,
+            "points_cost": 2
+        }
+    },
+
+    // 默认工作流配置
+    // 用户首次使用时的默认处理方式
+    "default_workflow": "Qwen_edit",
+
+    // 文生图配置
+    // seed_id: 种子节点ID
+    // output_image_id: 输出图像节点ID
+    // workflow: 工作流JSON文件名
+    // prompt_node_id: 提示词节点ID（节点5使用text字段）
+    // remove_iterations: 处理迭代次数
+    // points_cost: 每张图片消耗的积分
+    "text_to_image": {
+        "seed_id": 7,
+        "output_image_id": 60,
+        "workflow": "Z-image.json",
+        "prompt_node_id": 5,
+        "remove_iterations": 1,
+        "points_cost": 2
+    }
+}

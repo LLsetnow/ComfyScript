@@ -53,7 +53,7 @@ except ImportError as e:
 from feishu_client import FeishuClient, FeishuMessenger
 
 # 导入 Agent
-from Agent import ReActAgent, HelloAgentsLLM, ToolExecutor, search, calculate, get_current_time, comfyui_text_to_image, comfyui_check_server, comfyui_context
+from Agent import ReActAgent, HelloAgentsLLM, ToolExecutor, search, calculate, get_current_time, comfyui_text_to_image, comfyui_check_server, comfyui_edit_image, comfyui_context
 
 
 # ============================================================================
@@ -118,6 +118,8 @@ def strip_markdown(text: str) -> str:
 
 # 处理中的消息ID，防止同一条消息被并发处理
 _processing_messages = set()
+_processed_messages = set()  # 已处理完成的消息ID，防止重推
+_processed_messages_max = 1000  # 最大缓存数量
 _processing_lock = threading.Lock()
 
 
@@ -164,6 +166,11 @@ tool_executor.registerTool(
     "CheckComfyUI",
     "检查ComfyUI服务器是否正在运行。当需要确认图像生成服务是否可用时，应先调用此工具。无需输入参数。",
     comfyui_check_server
+)
+tool_executor.registerTool(
+    "EditImage",
+    "使用ComfyUI对用户发送的图片进行编辑。当用户发送了图片并要求对图片进行修改/编辑时使用此工具。输入应为编辑提示词，如\"给人物加上墨镜\"、\"把背景换成海滩\"等。注意：只有当用户已发送图片且需要编辑时才调用此工具。",
+    comfyui_edit_image
 )
 
 # 初始化 ReAct Agent
@@ -270,10 +277,13 @@ def handle_message_event(data):
                 sender_id = getattr(sender_id_obj, 'open_id', '') or getattr(sender_id_obj, 'user_id', '')
             sender_type = getattr(sender, 'sender_type', '')
 
-        # 检查是否正在处理同一消息
+        # 检查是否正在处理同一消息或已处理过
         with _processing_lock:
             if message_id in _processing_messages:
                 logger.info(f"[跳过] 消息正在处理中: {message_id}")
+                return
+            if message_id in _processed_messages:
+                logger.info(f"[跳过] 消息已处理过: {message_id}")
                 return
             _processing_messages.add(message_id)
 
@@ -295,9 +305,60 @@ def handle_message_event(data):
             logger.info(f"消息类型: {message_type}")
             logger.info(f"原始内容: {content}")
 
-            # 只处理文本消息
+            # 如果 message_type 为空，尝试从 content 推断
+            if not message_type and content:
+                try:
+                    content_json = json.loads(content)
+                    if 'text' in content_json:
+                        message_type = 'text'
+                    elif 'image_key' in content_json:
+                        message_type = 'image'
+                    logger.info(f"推断的消息类型: {message_type}")
+                except Exception:
+                    pass
+
+            # ========== 处理图片消息 ==========
+            if message_type == 'image':
+                try:
+                    content_json = json.loads(content)
+                    image_key = content_json.get("image_key", "")
+                except Exception:
+                    image_key = ""
+
+                if not image_key:
+                    logger.info("[跳过] 无法提取 image_key")
+                    return
+
+                logger.info(f"收到图片消息, image_key: {image_key}")
+
+                # 如果已有待编辑图片，提示用户
+                if comfyui_context.pending_image_path:
+                    feishu_client.send_text(chat_id, "⚠️ 您已发送了一张图片，正在等待您输入编辑提示词。\n\n请输入提示词（如：给人物加上墨镜）来描述您想要的修改。\n\n发送\"不需要\"可取消编辑。")
+                    return
+
+                # 下载图片
+                from Comfyui import config as comfyui_config
+                temp_image_path = feishu_client.download_image(
+                    image_key, message_id, comfyui_config.input_folder
+                )
+
+                if temp_image_path:
+                    logger.info(f"图片已下载: {temp_image_path}")
+                    # 保存到上下文，等待用户输入编辑提示词
+                    comfyui_context.pending_image_path = temp_image_path
+                    feishu_client.send_text(
+                        chat_id,
+                        "📸 已收到图片！\n\n请问您是否要对这张图片进行编辑？\n"
+                        "如果需要编辑，请告诉我您想要进行的修改（如：给人物加上墨镜、把背景换成海滩等）。\n"
+                        "如果不需要编辑，请回复\"不需要\"。"
+                    )
+                else:
+                    feishu_client.send_text(chat_id, "❌ 下载图片失败，请重新发送。")
+                return
+
+            # ========== 处理文本消息 ==========
             if message_type != 'text':
-                logger.info(f"[跳过] 仅支持文本消息")
+                logger.info(f"[跳过] 不支持的消息类型: {message_type}")
                 return
 
             # 提取文本内容
@@ -314,7 +375,47 @@ def handle_message_event(data):
 
             logger.info(f"用户消息: {user_text}")
 
-            # 使用 Agent 处理消息
+            # 检查是否有待编辑的图片
+            if comfyui_context.pending_image_path:
+                # 用户表示不需要编辑
+                if user_text in ["不需要", "不用", "不要", "否", "no", "No", "NO", "取消"]:
+                    old_path = comfyui_context.pending_image_path
+                    comfyui_context.pending_image_path = None
+                    # 删除临时图片
+                    try:
+                        os.remove(old_path)
+                    except Exception:
+                        pass
+                    feishu_client.send_text(chat_id, "好的，已取消图片编辑。如果需要其他帮助，请随时告诉我！")
+                    return
+
+                # 用户提供了编辑提示词，使用 Agent 处理
+                logger.info(f"--- Agent 正在处理图像编辑请求 ---")
+                feishu_client.send_text(chat_id, f"🖌️ 收到！正在根据您的需求「{user_text}」编辑图片，请稍候...")
+                try:
+                    answer = agent.run(f"用户已发送了一张图片，图片已保存在服务器上。请直接使用EditImage工具对这张图片进行编辑，编辑提示词为：{user_text}。注意：图片已经存在，无需请求用户发送图片。")
+                except Exception as e:
+                    logger.error(f"Agent 执行异常: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    answer = None
+
+                logger.info(f"--- Agent 回答完成, answer={answer[:50] if answer else 'None'}... ---")
+
+                # 发送回复（编辑成功时只发图片，不发文字）
+                if answer and answer.strip() == "__EDIT_IMAGE_SUCCESS__":
+                    logger.info(f"--- 图像编辑成功，图片已发送 ---")
+                elif answer:
+                    answer = strip_markdown(answer)
+                    feishu_client.send_text(chat_id, answer)
+                else:
+                    feishu_client.send_text(chat_id, "抱歉，图像编辑失败。")
+
+                # 清除待编辑图片状态（EditImage 工具内部已处理）
+                comfyui_context.pending_image_path = None
+                return
+
+            # 普通文本消息，使用 Agent 处理
             logger.info("--- Agent 正在思考... ---")
             try:
                 answer = agent.run(user_text)
@@ -348,9 +449,16 @@ def handle_message_event(data):
                 feishu_client.send_text(chat_id, "抱歉，我无法回答这个问题。")
 
         finally:
-            # 处理完成后移除消息ID
+            # 处理完成后：从处理中集合移除，加入已处理集合
             with _processing_lock:
                 _processing_messages.discard(message_id)
+                _processed_messages.add(message_id)
+                # 防止已处理集合无限增长
+                if len(_processed_messages) > _processed_messages_max:
+                    # 保留后半部分
+                    excess = len(_processed_messages) - _processed_messages_max // 2
+                    for _ in range(excess):
+                        _processed_messages.pop()
             # 清除 ComfyUI 上下文的 chat_id
             comfyui_context.chat_id = None
 

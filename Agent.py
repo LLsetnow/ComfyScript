@@ -25,6 +25,7 @@ class _ComfyUIContext:
         self.chat_id = None
         self.comfyui_client = None
         self.image_processor = None
+        self.pending_image_path = None  # 待编辑的图片路径
 
     def set(self, feishu_client=None, chat_id=None, comfyui_client=None, image_processor=None):
         self.feishu_client = feishu_client
@@ -35,6 +36,7 @@ class _ComfyUIContext:
     def clear(self):
         self.feishu_client = None
         self.chat_id = None
+        self.pending_image_path = None
 
 comfyui_context = _ComfyUIContext()
 
@@ -54,6 +56,7 @@ REACT_PROMPT_TEMPLATE = """
 - 搜索类问题（如时事、新闻、最新产品等），搜索后应立即基于搜索结果回答，不要反复搜索
 - 计算类问题，调用计算器后应立即给出结果
 - 不要在获得搜索结果后继续搜索相同或相似的问题
+- 文生图（TextToImage）成功后，必须立即使用 Finish 结束，不要重复生成图片
 
 请严格按照以下格式进行回应:
 
@@ -294,11 +297,13 @@ class ReActAgent:
 
             # 构建完整提示词
             if guidance:
-                full_prompt = f"{REACT_PROMPT_TEMPLATE.format(
-                    tools=tools_desc,
-                    question=question,
-                    history=history_str
-                )}\n\n【系统纠错引导】\n{guidance}"
+                full_prompt = (
+                    REACT_PROMPT_TEMPLATE.format(
+                        tools=tools_desc,
+                        question=question,
+                        history=history_str
+                    ) + f"\n\n【系统纠错引导】\n{guidance}"
+                )
             else:
                 full_prompt = REACT_PROMPT_TEMPLATE.format(
                     tools=tools_desc,
@@ -760,7 +765,7 @@ def comfyui_text_to_image(prompt: str) -> str:
                     ctx.chat_id, output_file, f"🎨 文生图: {prompt[:50]}"
                 )
                 if success:
-                    return f"文生图成功！已将图片发送到聊天。提示词: {prompt}"
+                    return f"文生图成功！已将图片发送到聊天。提示词: {prompt}\n请立即使用Finish结束，不要再次生成图片。"
                 else:
                     return f"文生图成功，但图片发送失败。图片路径: {output_file}"
             except Exception as e:
@@ -796,6 +801,74 @@ def comfyui_check_server() -> str:
             return "ComfyUI 服务器未运行。如需生成图片，请先启动 ComfyUI 服务器。"
     except Exception as e:
         return f"检查 ComfyUI 服务器状态时出错: {str(e)}"
+
+
+def comfyui_edit_image(prompt: str) -> str:
+    """
+    ComfyUI 图像编辑工具。根据提示词对用户发送的图片进行编辑，并将结果发送到当前聊天。
+
+    Args:
+        prompt: 编辑提示词，描述要对图片进行的修改，如"给人物加上墨镜"、"把背景换成海滩"等
+
+    Returns:
+        操作结果描述
+    """
+    logger.info(f"🖌️ 正在执行图像编辑: {prompt[:50]}...")
+
+    ctx = comfyui_context
+    if not ctx.image_processor:
+        return "错误: ComfyUI 图像处理器未初始化，无法执行图像编辑。"
+
+    if not ctx.pending_image_path or not os.path.exists(ctx.pending_image_path):
+        return "错误: 没有待编辑的图片。请先发送一张图片再进行编辑。"
+
+    try:
+        # 检查 ComfyUI 服务器是否运行
+        if not ctx.comfyui_client or not ctx.comfyui_client.check_server(max_attempts=1, check_delay=0):
+            return "错误: ComfyUI 服务器未运行，请先启动 ComfyUI 服务器后再试。"
+
+        # 使用 Qwen_edit 工作流进行图像编辑
+        output_file = ctx.image_processor.process_image_with_prompt(
+            ctx.pending_image_path,
+            "Qwen_edit",
+            prompt
+        )
+
+        if not output_file or not os.path.exists(output_file):
+            return "错误: 图像编辑失败，未生成图片。请检查 ComfyUI 服务器状态或尝试换一个提示词。"
+
+        logger.info(f"✅ 图像编辑成功，输出文件: {output_file}")
+
+        # 发送图片到飞书
+        if ctx.feishu_client and ctx.chat_id:
+            try:
+                # 只发送编辑后的图片
+                success = ctx.feishu_client.send_image_with_caption(
+                    ctx.chat_id, output_file, ""
+                )
+                if success:
+                    # 清理待编辑图片状态
+                    old_image_path = ctx.pending_image_path
+                    ctx.pending_image_path = None
+                    # 尝试删除临时图片
+                    try:
+                        os.remove(old_image_path)
+                    except Exception:
+                        pass
+                    return "__EDIT_IMAGE_SUCCESS__"
+                else:
+                    return f"图像编辑成功，但图片发送失败。图片路径: {output_file}"
+            except Exception as e:
+                logger.error(f"发送编辑图片到飞书失败: {e}")
+                return f"图像编辑成功，但图片发送失败: {str(e)}。图片路径: {output_file}"
+        else:
+            return f"图像编辑成功！图片路径: {output_file}"
+
+    except Exception as e:
+        logger.error(f"图像编辑异常: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return f"图像编辑错误: {str(e)}"
 
 # --- 工具初始化与使用示例 ---
 if __name__ == '__main__':
