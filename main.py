@@ -322,9 +322,12 @@ class FeishuBot:
             self.comfyui_client = None
             self.image_processor = None
 
-    @staticmethod
-    def _get_ngrok_url() -> str:
-        """通过 ngrok 本地 API 获取公网地址"""
+    # 默认 ngrok 公网地址（当本地 API 不可用时使用）
+    DEFAULT_NGROK_URL = "https://candi-sporogonial-eliz.ngrok-free.dev"
+
+    @classmethod
+    def _get_ngrok_url(cls) -> str:
+        """通过 ngrok 本地 API 获取公网地址，失败时返回默认地址"""
         try:
             import urllib.request
             with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=3) as resp:
@@ -335,7 +338,7 @@ class FeishuBot:
                         return url
         except Exception:
             pass
-        return ""
+        return cls.DEFAULT_NGROK_URL
 
     # ---- 消息处理 ----
 

@@ -751,7 +751,7 @@ def comfyui_text_to_image(prompt: str) -> str:
     try:
         # 检查 ComfyUI 服务器是否运行
         if not ctx.comfyui_client or not ctx.comfyui_client.check_server(max_attempts=1, check_delay=0):
-            return "错误: ComfyUI 服务器未运行，请先启动 ComfyUI 服务器后再试。"
+            return "错误: ComfyUI 服务器未运行，无法生成图片。请使用Finish[抱歉，ComfyUI服务器当前未运行，无法生成图片。请稍后再试。]直接结束，不要再重试。"
 
         # 执行文生图
         output_file = ctx.image_processor.process_text_to_image(prompt)
@@ -814,13 +814,17 @@ def comfyui_check_server(dummy: str = "") -> str:
             if ctx.comfyui_client.check_server(max_attempts=2, check_delay=2):
                 return f"ComfyUI 服务器正在运行中（公网地址），可以执行图像生成任务。"
 
-        return "ComfyUI 服务器未运行。如需生成图片，请先启动 ComfyUI 服务器。"
+        return "ComfyUI 服务器未运行。无法生成图片，请使用Finish[抱歉，ComfyUI服务器当前未运行，无法生成图片。请稍后再试。]直接结束，不要再重试CheckComfyUI。"
     except Exception as e:
         return f"检查 ComfyUI 服务器状态时出错: {str(e)}"
 
 
+# 默认 ngrok 公网地址（当本地 API 不可用时使用）
+_DEFAULT_NGROK_URL = "https://candi-sporogonial-eliz.ngrok-free.dev"
+
+
 def _get_ngrok_url() -> str:
-    """通过 ngrok 本地 API 获取公网地址"""
+    """通过 ngrok 本地 API 获取公网地址，失败时返回默认地址"""
     try:
         import urllib.request
         import json as _json
@@ -832,7 +836,7 @@ def _get_ngrok_url() -> str:
                     return url
     except Exception:
         pass
-    return ""
+    return _DEFAULT_NGROK_URL
 
 
 def comfyui_edit_image(prompt: str) -> str:
@@ -857,7 +861,7 @@ def comfyui_edit_image(prompt: str) -> str:
     try:
         # 检查 ComfyUI 服务器是否运行
         if not ctx.comfyui_client or not ctx.comfyui_client.check_server(max_attempts=1, check_delay=0):
-            return "错误: ComfyUI 服务器未运行，请先启动 ComfyUI 服务器后再试。"
+            return "错误: ComfyUI 服务器未运行，无法生成图片。请使用Finish[抱歉，ComfyUI服务器当前未运行，无法生成图片。请稍后再试。]直接结束，不要再重试。"
 
         # 使用 Qwen_edit 工作流进行图像编辑
         output_file = ctx.image_processor.process_image_with_prompt(
