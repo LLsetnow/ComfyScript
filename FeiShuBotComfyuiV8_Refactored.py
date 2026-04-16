@@ -29,6 +29,9 @@ load_dotenv()
 # 导入飞书客户端
 from feishu_client import FeishuClient, FeishuMessenger, FeishuAPI
 
+# 导入 ComfyUI 模块
+from Comfyui import ComfyUIClient, ImageProcessor, config as comfyui_config
+
 
 # ============================================================================
 # 飞书SDK导入

@@ -7,11 +7,36 @@ import logging
 from datetime import datetime, timezone, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import requests
 
 # 加载 .env 文件中的环境变量
 load_dotenv()
+
+
+# ============================================================================
+# ComfyUI 工具上下文管理
+# ============================================================================
+
+class _ComfyUIContext:
+    """ComfyUI 工具的运行时上下文，用于传递飞书客户端和 chat_id"""
+    def __init__(self):
+        self.feishu_client = None
+        self.chat_id = None
+        self.comfyui_client = None
+        self.image_processor = None
+
+    def set(self, feishu_client=None, chat_id=None, comfyui_client=None, image_processor=None):
+        self.feishu_client = feishu_client
+        self.chat_id = chat_id
+        self.comfyui_client = comfyui_client
+        self.image_processor = image_processor
+
+    def clear(self):
+        self.feishu_client = None
+        self.chat_id = None
+
+comfyui_context = _ComfyUIContext()
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -659,7 +684,6 @@ def calculate(expression: str) -> str:
     except Exception as e:
         return f"未知错误: {str(e)}"
 
-
 def get_current_time(timezone_offset: str = "") -> str:
     """
     获取当前日期和时间工具。
@@ -694,6 +718,84 @@ def get_current_time(timezone_offset: str = "") -> str:
         return result
     except Exception as e:
         return f"获取时间错误: {str(e)}"
+
+
+# ============================================================================
+# ComfyUI 图像生成工具
+# ============================================================================
+
+def comfyui_text_to_image(prompt: str) -> str:
+    """
+    ComfyUI 文生图工具。根据文字描述生成图片，并将图片发送到当前聊天。
+
+    Args:
+        prompt: 图像描述/提示词，如"一只可爱的猫咪"、"夕阳下的海滩"等
+
+    Returns:
+        操作结果描述
+    """
+    logger.info(f"🎨 正在执行文生图: {prompt[:50]}...")
+
+    ctx = comfyui_context
+    if not ctx.image_processor:
+        return "错误: ComfyUI 图像处理器未初始化，无法执行文生图。"
+
+    try:
+        # 检查 ComfyUI 服务器是否运行
+        if not ctx.comfyui_client or not ctx.comfyui_client.check_server(max_attempts=1, check_delay=0):
+            return "错误: ComfyUI 服务器未运行，请先启动 ComfyUI 服务器后再试。"
+
+        # 执行文生图
+        output_file = ctx.image_processor.process_text_to_image(prompt)
+
+        if not output_file or not os.path.exists(output_file):
+            return "错误: 文生图失败，未生成图片。请检查 ComfyUI 服务器状态或尝试换一个提示词。"
+
+        logger.info(f"✅ 文生图成功，输出文件: {output_file}")
+
+        # 发送图片到飞书
+        if ctx.feishu_client and ctx.chat_id:
+            try:
+                success = ctx.feishu_client.send_image_with_caption(
+                    ctx.chat_id, output_file, f"🎨 文生图: {prompt[:50]}"
+                )
+                if success:
+                    return f"文生图成功！已将图片发送到聊天。提示词: {prompt}"
+                else:
+                    return f"文生图成功，但图片发送失败。图片路径: {output_file}"
+            except Exception as e:
+                logger.error(f"发送图片到飞书失败: {e}")
+                return f"文生图成功，但图片发送失败: {str(e)}。图片路径: {output_file}"
+        else:
+            return f"文生图成功！图片路径: {output_file}"
+
+    except Exception as e:
+        logger.error(f"文生图异常: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return f"文生图错误: {str(e)}"
+
+
+def comfyui_check_server() -> str:
+    """
+    检查 ComfyUI 服务器是否正在运行。
+
+    Returns:
+        服务器状态描述
+    """
+    logger.info("🔍 正在检查 ComfyUI 服务器状态...")
+
+    ctx = comfyui_context
+    if not ctx.comfyui_client:
+        return "ComfyUI 客户端未初始化。"
+
+    try:
+        if ctx.comfyui_client.check_server(max_attempts=2, check_delay=2):
+            return "ComfyUI 服务器正在运行中，可以执行图像生成任务。"
+        else:
+            return "ComfyUI 服务器未运行。如需生成图片，请先启动 ComfyUI 服务器。"
+    except Exception as e:
+        return f"检查 ComfyUI 服务器状态时出错: {str(e)}"
 
 # --- 工具初始化与使用示例 ---
 if __name__ == '__main__':

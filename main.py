@@ -53,7 +53,7 @@ except ImportError as e:
 from feishu_client import FeishuClient, FeishuMessenger
 
 # 导入 Agent
-from Agent import ReActAgent, HelloAgentsLLM, ToolExecutor, search, calculate, get_current_time
+from Agent import ReActAgent, HelloAgentsLLM, ToolExecutor, search, calculate, get_current_time, comfyui_text_to_image, comfyui_check_server, comfyui_context
 
 
 # ============================================================================
@@ -155,6 +155,16 @@ tool_executor.registerTool(
     "获取当前日期和时间。当需要知道当前时间、日期，或需要判断信息的时效性（如\"今天\"、\"最新\"、\"最近\"等）时，应先调用此工具获取当前时间。输入可选时区偏移，如'+8'表示东八区，默认为东八区(北京时间)。",
     get_current_time
 )
+tool_executor.registerTool(
+    "TextToImage",
+    "使用ComfyUI进行文生图（文字生成图片）。当用户要求生成图片、画图、创作图像时使用此工具。输入应为图像的详细描述/提示词，如\"一只可爱的猫咪\"、\"夕阳下的海滩\"等。生成的图片将自动发送到聊天中。",
+    comfyui_text_to_image
+)
+tool_executor.registerTool(
+    "CheckComfyUI",
+    "检查ComfyUI服务器是否正在运行。当需要确认图像生成服务是否可用时，应先调用此工具。无需输入参数。",
+    comfyui_check_server
+)
 
 # 初始化 ReAct Agent
 agent = ReActAgent(
@@ -192,6 +202,34 @@ client = lark.Client.builder() \
 feishu_client.set_client(client)
 
 logger.info("[OK] 飞书客户端初始化完成")
+
+
+# ============================================================================
+# 初始化 ComfyUI 客户端
+# ============================================================================
+
+logger.info("\n--- 初始化 ComfyUI 客户端 ---")
+
+try:
+    from Comfyui import ComfyUIClient, ImageProcessor
+    comfyui_client = ComfyUIClient()
+    image_processor = ImageProcessor(comfyui_client)
+
+    # 设置 ComfyUI 工具上下文
+    comfyui_context.set(
+        feishu_client=feishu_client,
+        comfyui_client=comfyui_client,
+        image_processor=image_processor
+    )
+
+    if comfyui_client.check_server(max_attempts=1, check_delay=0):
+        logger.info("[OK] ComfyUI 服务器已运行")
+    else:
+        logger.warning("[警告] ComfyUI 服务器未运行，文生图功能暂不可用")
+except Exception as e:
+    logger.warning(f"[警告] ComfyUI 初始化失败（文生图功能不可用）: {e}")
+    comfyui_client = None
+    image_processor = None
 
 
 # ============================================================================
@@ -247,6 +285,9 @@ def handle_message_event(data):
             return
 
         try:
+            # 设置 ComfyUI 上下文的 chat_id
+            comfyui_context.chat_id = chat_id
+
             logger.info(f"========== 收到新消息 ==========")
             logger.info(f"消息ID: {message_id}")
             logger.info(f"聊天ID: {chat_id}")
@@ -310,6 +351,8 @@ def handle_message_event(data):
             # 处理完成后移除消息ID
             with _processing_lock:
                 _processing_messages.discard(message_id)
+            # 清除 ComfyUI 上下文的 chat_id
+            comfyui_context.chat_id = None
 
     except Exception as e:
         logger.error(f"[ERROR] 处理消息异常: {e}")
