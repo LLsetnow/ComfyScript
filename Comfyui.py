@@ -105,12 +105,20 @@ class ComfyUIConfig:
     
     @property
     def input_folder(self) -> str:
-        """获取输入文件夹"""
+        """获取输入文件夹。远程模式使用本地缓存目录"""
+        api = self.api_url
+        is_remote = not (api.startswith("http://127.0.0.1") or api.startswith("http://localhost"))
+        if is_remote:
+            return os.path.join(os.path.dirname(os.path.abspath(__file__)), "comfyui_cache", "input")
         return os.path.join(self.folder, "input")
     
     @property
     def output_folder(self) -> str:
-        """获取输出文件夹"""
+        """获取输出文件夹。远程模式使用本地缓存目录"""
+        api = self.api_url
+        is_remote = not (api.startswith("http://127.0.0.1") or api.startswith("http://localhost"))
+        if is_remote:
+            return os.path.join(os.path.dirname(os.path.abspath(__file__)), "comfyui_cache", "output", "FeiShuBot")
         return os.path.join(self.folder, "output", "FeiShuBot")
     
     @property
@@ -300,6 +308,13 @@ class ComfyUIClient:
                     self.api_url.startswith("http://localhost"))
     
     @property
+    def proxies(self) -> dict:
+        """获取代理设置。HTTPS 远程地址（如 ngrok）不走代理"""
+        if self.api_url.startswith("https://"):
+            return {"http": None, "https": None}
+        return config.proxy_settings
+    
+    @property
     def is_running(self) -> bool:
         """检查服务器是否运行"""
         return self.check_server()
@@ -363,7 +378,7 @@ class ComfyUIClient:
                     headers=headers,
                     data=multi_form,
                     timeout=60,
-                    proxies=config.proxy_settings
+                    proxies=self.proxies
                 )
 
             if response.status_code != 200:
@@ -412,7 +427,7 @@ class ComfyUIClient:
                 f"{self.api_url}/view",
                 params=params,
                 timeout=60,
-                proxies=config.proxy_settings
+                proxies=self.proxies
             )
 
             if response.status_code != 200:
@@ -680,7 +695,7 @@ class ImageProcessor:
             response = req_lib.get(
                 f"{self.client.api_url}/history/{prompt_id}",
                 timeout=10,
-                proxies=config.proxy_settings
+                proxies=self.client.proxies
             )
             if response.status_code != 200:
                 print(f"[ComfyUI] 获取历史记录失败: HTTP {response.status_code}")
