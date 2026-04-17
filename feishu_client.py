@@ -5,6 +5,7 @@
 import json
 import time
 import os
+import tempfile
 from typing import Optional, Dict
 from dotenv import load_dotenv
 
@@ -160,7 +161,162 @@ class FeishuClient:
         return self.send_message(chat_id, content, "image")
     
     # ==================== 图片上传下载 ====================
-    
+
+    @staticmethod
+    def _compress_image(image_path: str, max_size_mb: float = 5.0, max_dimension: int = 4096) -> str:
+        """
+        压缩图片以符合飞书图片上传限制（默认5MB）。
+        如果图片不超过限制则返回原路径，否则压缩后返回临时文件路径。
+
+        Args:
+            image_path: 原始图片路径
+            max_size_mb: 最大文件大小（MB），默认5MB
+            max_dimension: 最大宽/高像素，默认4096
+
+        Returns:
+            str: 可用的图片路径（原路径或压缩后的临时路径）
+        """
+        try:
+            file_size_mb = os.path.getsize(image_path) / (1024 * 1024)
+
+            from PIL import Image
+            img = Image.open(image_path)
+            width, height = img.size
+
+            # 检查是否需要压缩
+            need_compress = False
+            if file_size_mb > max_size_mb:
+                need_compress = True
+            if width > max_dimension or height > max_dimension:
+                need_compress = True
+
+            if not need_compress:
+                return image_path
+
+            print(f"[FeishuClient] 图片过大({file_size_mb:.1f}MB, {width}x{height})，正在压缩...")
+
+            # 缩小尺寸
+            if width > max_dimension or height > max_dimension:
+                ratio = min(max_dimension / width, max_dimension / height)
+                new_width = int(width * ratio)
+                new_height = int(height * ratio)
+                img = img.resize((new_width, new_height), Image.LANCZOS)
+
+            # 保存为临时文件
+            ext = os.path.splitext(image_path)[1].lower()
+            if ext not in ('.png', '.jpg', '.jpeg', '.webp'):
+                ext = '.png'
+
+            tmp_dir = tempfile.gettempdir()
+            tmp_path = os.path.join(tmp_dir, f"compressed_{int(time.time())}{ext}")
+
+            # PNG 保存，逐步降低质量
+            if ext == '.png':
+                for quality in range(6, 10):
+                    img.save(tmp_path, 'PNG', optimize=True, compress_level=quality)
+                    if os.path.getsize(tmp_path) / (1024 * 1024) <= max_size_mb:
+                        break
+                # 如果 PNG 还是太大，转为 JPEG
+                if os.path.getsize(tmp_path) / (1024 * 1024) > max_size_mb:
+                    tmp_path = os.path.join(tmp_dir, f"compressed_{int(time.time())}.jpg")
+                    if img.mode in ('RGBA', 'P'):
+                        img = img.convert('RGB')
+                    img.save(tmp_path, 'JPEG', quality=85)
+            else:
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
+                for q in [85, 75, 65, 55, 45]:
+                    img.save(tmp_path, 'JPEG', quality=q)
+                    if os.path.getsize(tmp_path) / (1024 * 1024) <= max_size_mb:
+                        break
+
+            new_size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
+            print(f"[FeishuClient] 压缩完成: {file_size_mb:.1f}MB → {new_size_mb:.1f}MB")
+            return tmp_path
+
+        except ImportError:
+            print("[FeishuClient] Pillow未安装，无法压缩图片，将尝试原尺寸上传")
+            return image_path
+        except Exception as e:
+            print(f"[FeishuClient] 压缩图片异常: {e}，将尝试原尺寸上传")
+            return image_path
+
+    def upload_file(self, file_path: str, file_type: str = "stream") -> Optional[str]:
+        """
+        上传文件到飞书，返回file_key。
+        用于发送大文件（如图片过大无法以图片形式发送时）。
+
+        Args:
+            file_path: 文件路径
+            file_type: 文件类型，stream表示二进制流文件
+
+        Returns:
+            str: file_key，失败返回None
+        """
+        try:
+            import requests
+            from requests_toolbelt import MultipartEncoder
+        except ImportError:
+            print("[FeishuClient] requests或requests_toolbelt库未安装")
+            return None
+
+        token = self._get_tenant_access_token()
+        if not token:
+            return None
+
+        upload_url = f"{self.api_base}/im/v1/files"
+
+        try:
+            with open(file_path, 'rb') as f:
+                form = {
+                    'file_type': file_type,
+                    'file_name': os.path.basename(file_path),
+                    'file': f
+                }
+                multi_form = MultipartEncoder(form)
+
+                headers = {
+                    'Authorization': f'Bearer {token}',
+                }
+                headers['Content-Type'] = multi_form.content_type
+
+                response = requests.post(upload_url, headers=headers, data=multi_form, timeout=60)
+
+            if response.status_code != 200:
+                print(f"[FeishuClient] 上传文件失败: HTTP {response.status_code}")
+                return None
+
+            result = response.json()
+            if result.get('code') != 0:
+                print(f"[FeishuClient] 上传文件失败: {result.get('msg')}")
+                return None
+
+            file_key = result.get('data', {}).get('file_key')
+            if not file_key:
+                print("[FeishuClient] 未获取到file_key")
+                return None
+
+            print(f"[FeishuClient] 文件上传成功, file_key: {file_key}")
+            return file_key
+
+        except Exception as e:
+            print(f"[FeishuClient] 上传文件异常: {e}")
+            return None
+
+    def send_file(self, chat_id: str, file_key: str) -> bool:
+        """
+        发送文件消息
+
+        Args:
+            chat_id: 聊天ID
+            file_key: 飞书文件key
+
+        Returns:
+            bool: 发送是否成功
+        """
+        content = json.dumps({"file_key": file_key})
+        return self.send_message(chat_id, content, "file")
+
     def upload_image(self, image_path: str) -> Optional[str]:
         """
         上传图片到飞书，返回image_key
@@ -291,10 +447,42 @@ class FeishuClient:
             if caption:
                 self.send_text(chat_id, caption)
             
-            # 上传并发送图片
+            file_size_mb = os.path.getsize(image_path) / (1024 * 1024)
+            
+            # 图片大于5MB时，以文件形式发送（保留原始质量）
+            if file_size_mb > 5.0:
+                print(f"[FeishuClient] 图片过大({file_size_mb:.1f}MB)，将以文件形式发送...")
+                self.send_text(chat_id, f"📎 图片较大({file_size_mb:.1f}MB)，以文件形式发送：")
+                file_key = self.upload_file(image_path)
+                if file_key:
+                    return self.send_file(chat_id, file_key)
+                return False
+            
+            # 图片在5MB以内，以图片形式发送
             image_key = self.upload_image(image_path)
             if image_key:
                 return self.send_image(chat_id, image_key)
+            
+            # 图片上传失败，尝试压缩后重试
+            print("[FeishuClient] 原图上传失败，尝试压缩后发送...")
+            compressed_path = self._compress_image(image_path)
+            image_key = self.upload_image(compressed_path)
+            
+            # 清理临时压缩文件
+            if compressed_path != image_path and os.path.exists(compressed_path):
+                try:
+                    os.remove(compressed_path)
+                except Exception:
+                    pass
+            
+            if image_key:
+                return self.send_image(chat_id, image_key)
+            
+            # 压缩后仍失败，以文件形式发送原图
+            print("[FeishuClient] 压缩后上传仍失败，以文件形式发送原图...")
+            file_key = self.upload_file(image_path)
+            if file_key:
+                return self.send_file(chat_id, file_key)
             return False
             
         except Exception as e:

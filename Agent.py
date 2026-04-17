@@ -907,6 +907,72 @@ def comfyui_edit_image(prompt: str) -> str:
         return f"图像编辑错误: {str(e)}"
 
 
+def comfyui_remove_background(prompt: str) -> str:
+    """
+    ComfyUI 背景去除工具。当用户发送了人像图片并要求去除背景杂物、移除背景、抠图等时使用此工具。
+    此工具专门用于人像图的背景移除，效果比通用编辑更好。
+
+    Args:
+        prompt: 用户的描述（实际处理不需要，仅为兼容工具调用格式）
+
+    Returns:
+        操作结果描述
+    """
+    logger.info(f"🖼️ 正在执行背景去除...")
+
+    ctx = comfyui_context
+    if not ctx.image_processor:
+        return "错误: ComfyUI 图像处理器未初始化，无法执行背景去除。"
+
+    if not ctx.pending_image_path or not os.path.exists(ctx.pending_image_path):
+        return "错误: 没有待处理的图片。请先发送一张图片再进行背景去除。"
+
+    try:
+        # 检查 ComfyUI 服务器是否运行
+        if not ctx.comfyui_client or not ctx.comfyui_client.check_server(max_attempts=1, check_delay=0):
+            return "错误: ComfyUI 服务器未运行，无法处理图片。请使用Finish[抱歉，ComfyUI服务器当前未运行，无法处理图片。请稍后再试。]直接结束，不要再重试。"
+
+        # 使用 BackgroundRemove 工作流（无需 prompt）
+        output_file = ctx.image_processor.process_image(
+            ctx.pending_image_path,
+            "BackgroundRemove"
+        )
+
+        if not output_file or not os.path.exists(output_file):
+            return "错误: 背景去除失败，未生成图片。请检查 ComfyUI 服务器状态。"
+
+        logger.info(f"✅ 背景去除成功，输出文件: {output_file}")
+
+        # 发送图片到飞书
+        if ctx.feishu_client and ctx.chat_id:
+            try:
+                success = ctx.feishu_client.send_image_with_caption(
+                    ctx.chat_id, output_file, ""
+                )
+                if success:
+                    # 清理待编辑图片状态
+                    old_image_path = ctx.pending_image_path
+                    ctx.pending_image_path = None
+                    try:
+                        os.remove(old_image_path)
+                    except Exception:
+                        pass
+                    return "__EDIT_IMAGE_SUCCESS__"
+                else:
+                    return f"背景去除成功，但图片发送失败。图片路径: {output_file}"
+            except Exception as e:
+                logger.error(f"发送背景去除图片到飞书失败: {e}")
+                return f"背景去除成功，但图片发送失败: {str(e)}。图片路径: {output_file}"
+        else:
+            return f"背景去除成功！图片路径: {output_file}"
+
+    except Exception as e:
+        logger.error(f"背景去除异常: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return f"背景去除错误: {str(e)}"
+
+
 def feishu_create_doc(input_str: str) -> str:
     """
     创建飞书云文档。当用户要求创建文档、记录笔记、撰写报告等场景时使用此工具。

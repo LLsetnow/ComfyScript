@@ -63,9 +63,23 @@ class ComfyUIConfig:
     def api_url(self) -> str:
         """获取 ComfyUI API URL"""
         comfyui_config = self._config.get("comfyUI", {}) if self._config else {}
+        # 支持直接配置完整 URL（如 ngrok 地址 https://xxxx.ngrok-free.app）
+        url = comfyui_config.get('url', '')
+        if url:
+            return url.rstrip('/')
         host = comfyui_config.get('host', '127.0.0.1')
         port = comfyui_config.get('port', '8188')
         return f"http://{host}:{port}"
+
+    @property
+    def proxy_settings(self) -> dict:
+        """获取代理设置，用于 requests 调用"""
+        proxy_config = self._config.get("proxy", {}) if self._config else {}
+        if not proxy_config.get("use_proxy", False):
+            return {"http": None, "https": None}
+        http_proxy = proxy_config.get("http", "")
+        https_proxy = proxy_config.get("https", "")
+        return {"http": http_proxy, "https": https_proxy} if http_proxy or https_proxy else {"http": None, "https": None}
     
     @property
     def folder(self) -> str:
@@ -280,6 +294,12 @@ class ComfyUIClient:
         self._process = None
     
     @property
+    def is_remote(self) -> bool:
+        """判断是否为远程服务器（非 localhost）"""
+        return not (self.api_url.startswith("http://127.0.0.1") or
+                    self.api_url.startswith("http://localhost"))
+    
+    @property
     def is_running(self) -> bool:
         """检查服务器是否运行"""
         return self.check_server()
@@ -301,12 +321,128 @@ class ComfyUIClient:
                 else:
                     return False
         return False
+
+    def upload_image(self, image_path: str, subfolder: str = "", overwrite: bool = True) -> Optional[str]:
+        """
+        通过 HTTP API 上传图片到 ComfyUI 服务器。
+        本地和远程服务器均可使用，远程时必须用此方法。
+
+        Args:
+            image_path: 本地图片路径
+            subfolder: 子目录（如 "FeiShuBot"）
+            overwrite: 是否覆盖同名文件
+
+        Returns:
+            str: 上传后的文件名（不含路径），失败返回 None
+        """
+        try:
+            import requests
+            from requests_toolbelt import MultipartEncoder
+        except ImportError:
+            # 无 requests 库时，本地模式用文件复制
+            if not self.is_remote:
+                filename = save_image_with_unique_name(image_path, config.input_folder)
+                return filename
+            print("[ComfyUI] requests 库未安装，无法上传图片到远程服务器")
+            return None
+
+        filename = os.path.basename(image_path)
+
+        try:
+            with open(image_path, 'rb') as f:
+                form = {
+                    'image': (filename, f, 'application/octet-stream'),
+                    'subfolder': ('', subfolder),
+                    'overwrite': ('', str(overwrite).lower()),
+                }
+                multi_form = MultipartEncoder(form)
+
+                headers = {'Content-Type': multi_form.content_type}
+                response = requests.post(
+                    f"{self.api_url}/upload/image",
+                    headers=headers,
+                    data=multi_form,
+                    timeout=60,
+                    proxies=config.proxy_settings
+                )
+
+            if response.status_code != 200:
+                print(f"[ComfyUI] 上传图片失败: HTTP {response.status_code}")
+                return None
+
+            result = response.json()
+            uploaded_name = result.get('name', filename)
+            print(f"[ComfyUI] 图片上传成功: {uploaded_name} (subfolder: {subfolder})")
+            return uploaded_name
+
+        except Exception as e:
+            print(f"[ComfyUI] 上传图片异常: {e}")
+            return None
+
+    def download_output(self, filename: str, subfolder: str = "",
+                        local_save_path: str = None) -> Optional[str]:
+        """
+        通过 HTTP API 从 ComfyUI 服务器下载输出图片。
+
+        Args:
+            filename: 远程文件名
+            subfolder: 子目录
+            local_save_path: 本地保存路径（含文件名），默认保存到 output_folder
+
+        Returns:
+            str: 本地文件路径，失败返回 None
+        """
+        # 本地模式：直接检查本地文件
+        if not self.is_remote:
+            return self.find_output_file(filename.replace(".png", "").replace(".jpg", ""))
+
+        try:
+            import requests as req_lib
+        except ImportError:
+            print("[ComfyUI] requests 库未安装，无法从远程服务器下载图片")
+            return None
+
+        try:
+            params = {
+                "filename": filename,
+                "subfolder": subfolder,
+                "type": "output",
+            }
+            response = req_lib.get(
+                f"{self.api_url}/view",
+                params=params,
+                timeout=60,
+                proxies=config.proxy_settings
+            )
+
+            if response.status_code != 200:
+                print(f"[ComfyUI] 下载图片失败: HTTP {response.status_code}")
+                return None
+
+            if not local_save_path:
+                os.makedirs(config.output_folder, exist_ok=True)
+                local_save_path = os.path.join(config.output_folder, filename)
+
+            with open(local_save_path, 'wb') as f:
+                f.write(response.content)
+
+            print(f"[ComfyUI] 图片下载成功: {local_save_path}")
+            return local_save_path
+
+        except Exception as e:
+            print(f"[ComfyUI] 下载图片异常: {e}")
+            return None
     
     def start_server(self) -> bool:
         """
         启动 ComfyUI 服务器
         :return: 是否启动成功
         """
+        # 远程模式下不启动本地服务器
+        if self.is_remote:
+            print("[ComfyUI] 远程模式，跳过本地服务器启动")
+            return self.check_server()
+        
         # 检查是否已经在运行
         if self.check_server(max_attempts=1, check_delay=0):
             print("[ComfyUI] 服务器已在运行")
@@ -521,6 +657,71 @@ class ImageProcessor:
     def __init__(self, client: ComfyUIClient = None):
         self.client = client or ComfyUIClient()
     
+    def _get_remote_output(self, prompt_id: str, search_pattern: str) -> Optional[str]:
+        """
+        从远程 ComfyUI 服务器获取输出图片。
+        通过 /history API 获取输出文件信息，再通过 /view API 下载。
+
+        Args:
+            prompt_id: 工作流 prompt ID
+            search_pattern: 搜索模式（seed 值）
+
+        Returns:
+            str: 下载后的本地文件路径，失败返回 None
+        """
+        try:
+            import requests as req_lib
+        except ImportError:
+            print("[ComfyUI] requests 库未安装，无法从远程获取输出")
+            return None
+
+        try:
+            # 从 history 获取输出信息
+            response = req_lib.get(
+                f"{self.client.api_url}/history/{prompt_id}",
+                timeout=10,
+                proxies=config.proxy_settings
+            )
+            if response.status_code != 200:
+                print(f"[ComfyUI] 获取历史记录失败: HTTP {response.status_code}")
+                return None
+
+            history = response.json()
+            if prompt_id not in history:
+                print(f"[ComfyUI] 历史记录中未找到 prompt_id: {prompt_id}")
+                return None
+
+            outputs = history[prompt_id].get('outputs', {})
+
+            # 遍历输出节点查找图片
+            for node_id, node_output in outputs.items():
+                images = node_output.get('images', [])
+                for img_info in images:
+                    filename = img_info.get('filename', '')
+                    subfolder = img_info.get('subfolder', '')
+                    # 检查文件名是否匹配
+                    if search_pattern in filename:
+                        return self.client.download_output(filename, subfolder)
+
+            # 如果没有精确匹配，尝试下载第一张图
+            for node_id, node_output in outputs.items():
+                images = node_output.get('images', [])
+                for img_info in images:
+                    filename = img_info.get('filename', '')
+                    subfolder = img_info.get('subfolder', '')
+                    if filename:
+                        print(f"[ComfyUI] 未精确匹配，下载第一张输出: {filename}")
+                        return self.client.download_output(filename, subfolder)
+
+            print("[ComfyUI] 远程输出中未找到图片")
+            return None
+
+        except Exception as e:
+            print(f"[ComfyUI] 获取远程输出异常: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
     def process_image(self, image_path: str, workflow_name: str) -> Optional[str]:
         """
         使用 ComfyUI 处理图像
@@ -540,9 +741,15 @@ class ImageProcessor:
         cfg = workflow_configs[workflow_name]
         
         try:
-            # 保存图像到 input 文件夹
-            print(f"  保存图像到 input 文件夹...")
-            image_filename = save_image_with_unique_name(image_path, config.input_folder)
+            # 上传/保存图像到 ComfyUI
+            print(f"  上传图像到 ComfyUI...")
+            if self.client.is_remote:
+                image_filename = self.client.upload_image(image_path, subfolder="FeiShuBot")
+            else:
+                image_filename = save_image_with_unique_name(image_path, config.input_folder)
+            if not image_filename:
+                print("  图像上传/保存失败")
+                return None
             print(f"  图像文件名: {image_filename}")
             
             # 初始化工作流处理器
@@ -577,8 +784,11 @@ class ImageProcessor:
             if not self.client.wait_for_completion(prompt_id, check_interval=2, timeout=300):
                 return None
             
-            # 查找输出文件
-            output_file = self.client.find_output_file(str(seed_value))
+            # 获取输出文件
+            if self.client.is_remote:
+                output_file = self._get_remote_output(prompt_id, str(seed_value))
+            else:
+                output_file = self.client.find_output_file(str(seed_value))
             if output_file:
                 print(f"  处理完成: {output_file}")
                 return output_file
@@ -637,7 +847,10 @@ class ImageProcessor:
                 return None
             
             search_pattern = f"t2i_{seed_value}"
-            output_file = self.client.find_output_file(search_pattern)
+            if self.client.is_remote:
+                output_file = self._get_remote_output(prompt_id, search_pattern)
+            else:
+                output_file = self.client.find_output_file(search_pattern)
             
             return output_file
             
@@ -668,8 +881,15 @@ class ImageProcessor:
         cfg = workflow_configs[workflow_name]
         
         try:
-            print(f"  保存图像到 input 文件夹...")
-            image_filename = save_image_with_unique_name(image_path, config.input_folder)
+            # 上传/保存图像到 ComfyUI
+            print(f"  上传图像到 ComfyUI...")
+            if self.client.is_remote:
+                image_filename = self.client.upload_image(image_path, subfolder="FeiShuBot")
+            else:
+                image_filename = save_image_with_unique_name(image_path, config.input_folder)
+            if not image_filename:
+                print("  图像上传/保存失败")
+                return None
             print(f"  图像文件名: {image_filename}")
             print(f"  提示词: {prompt[:50]}...")
             
@@ -704,7 +924,10 @@ class ImageProcessor:
             if not self.client.wait_for_completion(prompt_id, check_interval=2, timeout=300):
                 return None
             
-            output_file = self.client.find_output_file(str(seed_value))
+            if self.client.is_remote:
+                output_file = self._get_remote_output(prompt_id, str(seed_value))
+            else:
+                output_file = self.client.find_output_file(str(seed_value))
             if output_file:
                 print(f"  处理完成: {output_file}")
                 return output_file

@@ -216,6 +216,7 @@ class FeishuBot:
             ReActAgent, HelloAgentsLLM, ToolExecutor,
             search, calculate, get_current_time,
             comfyui_text_to_image, comfyui_check_server, comfyui_edit_image,
+            comfyui_remove_background,
             feishu_create_doc, feishu_write_doc, comfyui_context,
         )
         from Agent import comfyui_context  # 保持引用
@@ -239,6 +240,7 @@ class FeishuBot:
             ("TextToImage", "使用ComfyUI进行文生图（文字生成图片）。当用户要求生成图片、画图、创作图像时使用此工具。输入应为图像的详细描述/提示词，如\"一只可爱的猫咪\"、\"夕阳下的海滩\"等。生成的图片将自动发送到聊天中。", comfyui_text_to_image),
             ("CheckComfyUI", "检查ComfyUI服务器是否正在运行。当需要确认图像生成服务是否可用时，应先调用此工具。无需输入参数。", comfyui_check_server),
             ("EditImage", "使用ComfyUI对用户发送的图片进行编辑。当用户发送了图片并要求对图片进行修改/编辑时使用此工具。输入应为编辑提示词，如\"给人物加上墨镜\"、\"把背景换成海滩\"等。注意：只有当用户已发送图片且需要编辑时才调用此工具。", comfyui_edit_image),
+            ("RemoveBackground", "使用ComfyUI去除人像图片的背景杂物。当用户发送了人像图片并要求去除背景、移除背景杂物、抠图时使用此工具。此工具专门用于人像背景移除，效果比EditImage更好。输入为用户的描述文字即可。注意：只有当用户已发送图片且要求去除背景时才调用此工具，其他编辑需求应使用EditImage。", comfyui_remove_background),
             ("CreateDoc", "创建飞书云文档。当用户要求创建文档、记录笔记、撰写报告、写备忘录等场景时使用此工具。输入格式为：标题|正文内容（标题和正文用|分隔，正文可选）。例如：\"会议纪要|今天讨论了项目进度\"或\"学习笔记\"。", feishu_create_doc),
             ("WriteDoc", "向飞书云文档中写入/追加内容。当用户要求往某个已有文档中写入内容、补充笔记、添加段落时使用此工具。输入格式为：文档链接|要写入的内容。例如：\"https://bytedance.larkoffice.com/docx/abc123|这是新增的内容\"。", feishu_write_doc),
         ]
@@ -470,9 +472,20 @@ class FeishuBot:
         logger.info("--- Agent 正在处理图像编辑请求 ---")
         self.feishu_client.send_text(chat_id, f"🖌️ 收到！正在根据您的需求「{user_text}」编辑图片，请稍候...")
 
+        # 根据用户意图判断使用哪个工具
+        remove_bg_keywords = ["去除背景", "移除背景", "去背景", "抠图", "去掉背景", "删除背景", "背景杂物", "去除杂物", "去掉杂物"]
+        is_remove_bg = any(kw in user_text for kw in remove_bg_keywords)
+
+        if is_remove_bg:
+            tool_hint = "RemoveBackground"
+            tool_desc = "去除背景杂物"
+        else:
+            tool_hint = "EditImage"
+            tool_desc = "编辑"
+
         answer = self._run_agent(
-            f"用户已发送了一张图片，图片已保存在服务器上。请直接使用EditImage工具对这张图片进行编辑，"
-            f"编辑提示词为：{user_text}。注意：图片已经存在，无需请求用户发送图片。"
+            f"用户已发送了一张图片，图片已保存在服务器上。请直接使用{tool_hint}工具对这张图片进行{tool_desc}，"
+            f"用户的原始需求为：{user_text}。注意：图片已经存在，无需请求用户发送图片。"
         )
 
         # 发送回复（编辑成功时只发图片，不发文字）

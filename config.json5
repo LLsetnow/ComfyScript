@@ -12,13 +12,18 @@
     // folder: ComfyUI 安装目录
     // python_exe: Python 可执行文件路径
     // main_py: main.py 文件路径
-    // host/port/timeout: ComfyUI 服务器配置
+    // host: ComfyUI 服务器地址，本地填 127.0.0.1，跨服务器填远程IP
+    // url: 完整 API 地址（优先级高于 host:port），用于 ngrok 等内网穿透场景
+    //      示例: "https://xxxx.ngrok-free.app"
+    //      设为 "" 或不填则使用 host:port 拼接
+    // port/timeout: ComfyUI 服务器配置
     "comfyUI": {
         "folder": "D:\\AI_Graph\\ConfyUI-aki\\ComfyUI-aki-v1",
         "python_exe": "D:\\AI_Graph\\ConfyUI-aki\\ComfyUI-aki-v1\\python\\python.exe",
         "main_py": "D:\\AI_Graph\\ConfyUI-aki\\ComfyUI-aki-v1\\main.py",
         "host": "127.0.0.1",
         "port": "8188",
+        "url": "https://candi-sporogonial-eliz.ngrok-free.dev",
         "timeout": 300
     },
 
