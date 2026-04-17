@@ -20,7 +20,7 @@
 
 ## 架构
 
-![架构图](assert/architecture.png)
+![](assert/architecture.png)
 
 
 ### 文件结构
@@ -51,7 +51,7 @@ Agent 采用 ReAct（Reasoning + Acting）模式，能够：
 - 调用合适的工具获取信息
 - 基于工具返回结果综合回答
 
-![智能问答流程](assert/react_flow.png)
+![](assert/react_flow.png)
 
 **示例对话：**
 
@@ -63,7 +63,7 @@ Agent 采用 ReAct（Reasoning + Acting）模式，能够：
 
 ### 2. 文生图
 
-![文生图](assert/text_to_image.png)
+![](assert/text_to_image.png)
 
 用户发送文字描述，Agent 调用 ComfyUI 生成图片并自动发送到聊天。
 
@@ -76,7 +76,7 @@ Agent 采用 ReAct（Reasoning + Acting）模式，能够：
 
 ### 3. 图像编辑
 
-![图像编辑](assert/edit_image.png)
+![](assert/edit_image.png)
 
 用户先发送一张图片，然后输入编辑指令：
 
@@ -90,7 +90,7 @@ Agent 采用 ReAct（Reasoning + Acting）模式，能够：
 
 ### 4. 飞书云文档
 
-![云文档](assert/cloud_doc.png)
+![](assert/cloud_doc.png)
 
 **创建文档：**
 
