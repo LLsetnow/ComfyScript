@@ -3,7 +3,7 @@
     // use_proxy: 设置为 false 禁用代理
     // http/https: 代理服务器地址
     "proxy": {
-        "use_proxy": true,
+        "use_proxy": false,
         "http": "http://127.0.0.1:7897",
         "https": "http://127.0.0.1:7897"
     },
