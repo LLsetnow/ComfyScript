@@ -309,8 +309,8 @@ class ComfyUIClient:
     
     @property
     def proxies(self) -> dict:
-        """获取代理设置。HTTPS 远程地址（如 ngrok）不走代理"""
-        if self.api_url.startswith("https://"):
+        """获取代理设置。远程服务器不走代理"""
+        if self.is_remote:
             return {"http": None, "https": None}
         return config.proxy_settings
     
@@ -322,15 +322,16 @@ class ComfyUIClient:
     def check_server(self, max_attempts: int = 3, check_delay: int = 2) -> bool:
         """检查 ComfyUI 服务器是否可访问"""
         try:
-            from urllib import request, error as urllib_error
+            import requests as req_lib
         except ImportError:
             return False
         
         for attempt in range(max_attempts):
             try:
-                request.urlopen(f"{self.api_url}/system_stats", timeout=3)
-                return True
-            except urllib_error.URLError:
+                resp = req_lib.get(f"{self.api_url}/system_stats", timeout=3, proxies=self.proxies)
+                if resp.status_code == 200:
+                    return True
+            except Exception:
                 if attempt < max_attempts - 1:
                     time.sleep(check_delay)
                 else:
